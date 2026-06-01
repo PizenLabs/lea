@@ -16,8 +16,16 @@ type Store interface {
 	GetNeighbors(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
 	GetInboundEdges(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
 	ListEdges(ctx context.Context) ([]*graph.Edge, error)
+	GetStats(ctx context.Context) (*Stats, error)
 	DeleteNode(ctx context.Context, id string) error
 	DeleteByFile(ctx context.Context, file string) error
 	DeleteEdgesFrom(ctx context.Context, id string) error
 	Close() error
+}
+
+// Stats represents repository-wide structural statistics.
+type Stats struct {
+	NodesCount int
+	EdgesCount int
+	Languages  []string
 }
