@@ -306,6 +306,10 @@ func (s *Store) ListNodes(ctx context.Context) ([]*graph.Node, error) {
 		}
 		nodes = append(nodes, &node)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return nodes, nil
 }
 
@@ -332,6 +336,10 @@ func (s *Store) ListEdges(ctx context.Context) ([]*graph.Edge, error) {
 		}
 		edges = append(edges, &edge)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return edges, nil
 }
 
@@ -354,7 +362,7 @@ func (s *Store) GetStats(ctx context.Context) (*contracts.Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list files for languages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	langMap := make(map[string]bool)
 	for rows.Next() {
@@ -383,6 +391,10 @@ func (s *Store) GetStats(ctx context.Context) (*contracts.Stats, error) {
 				langMap[lang] = true
 			}
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over language files: %w", err)
 	}
 
 	for lang := range langMap {
@@ -454,6 +466,10 @@ func (s *Store) GetNeighbors(ctx context.Context, id string) ([]*graph.Node, []*
 		nodes = append(nodes, node)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
 	return nodes, edges, nil
 }
 
@@ -501,6 +517,10 @@ func (s *Store) GetInboundEdges(ctx context.Context, id string) ([]*graph.Node, 
 			return nil, nil, err
 		}
 		nodes = append(nodes, &n)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
 
 	return nodes, edges, nil
