@@ -1,16 +1,33 @@
-# lea 
+<div align="center">
 
-[![Go Version](https://img.shields.io/github/go-mod/go-v/PizenLabs/lea)](https://golang.org/doc/devel/release.html)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/PizenLabs/lea/ci.yml?branch=main)](https://github.com/PizenLabs/lea/actions)
-[![Go Report Card](https://goreportcard.com/badge/github.com/PizenLabs/lea)](https://goreportcard.com/report/github.com/PizenLabs/lea)
+<img src="https://raw.githubusercontent.com/PizenLabs/onpic/refs/heads/main/lea/lea.png" width="26%" alt="Lea Logo" />
 
+# Lea
 
-**Structural context operating system for AI-native software engineering.**
+### Structural reasoning engine for AI-native software engineering.
 
-`lea` is a terminal-first structural memory system designed to help AI models and developers navigate and understand large codebases with minimal context and maximum precision.
+**Lea transforms repositories into deterministic structural graphs — enabling AI agents and developers to reason about architecture, dependencies, execution flow, and system impact with minimal context and maximum precision.**
 
-Unlike traditional RAG systems that treat code as flat text, `lea` models repositories as **living structural graphs**, preserving the deterministic relationships (calls, dependencies, implementations) that define software systems.
+[![Go Version](https://img.shields.io/github/go-mod/go-v/PizenLabs/lea?style=flat-square)](https://golang.org/doc/devel/release.html)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
+[![CI](https://img.shields.io/github/actions/workflow/status/PizenLabs/lea/ci.yml?branch=main&style=flat-square)](https://github.com/PizenLabs/lea/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/PizenLabs/lea?style=flat-square)](https://goreportcard.com/report/github.com/PizenLabs/lea)
+[![Stars](https://img.shields.io/github/stars/PizenLabs/lea?style=flat-square&color=gold)](https://github.com/PizenLabs/lea/stargazers)
+
+---
+
+**Lynx discovers. Lea reasons.**
+
+[Vision](#the-vision) •
+[Features](#key-features) •
+[Architecture](#architecture) •
+[Installation](#installation) •
+[Quick Start](#quick-start) •
+[Command Guide](#command-guide) •
+[Roadmap](#roadmap) •
+[Contributing](#contributing)
+
+</div>
 
 ---
 
