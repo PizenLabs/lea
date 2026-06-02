@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	graph "github.com/PizenLabs/lea/internal/graph/contracts"
+	"github.com/PizenLabs/lea/internal/storage/contracts"
 	_ "modernc.org/sqlite" // SQLite driver
 )
 
@@ -331,6 +333,63 @@ func (s *Store) ListEdges(ctx context.Context) ([]*graph.Edge, error) {
 		edges = append(edges, &edge)
 	}
 	return edges, nil
+}
+
+// GetStats returns repository statistics.
+func (s *Store) GetStats(ctx context.Context) (*contracts.Stats, error) {
+	stats := &contracts.Stats{}
+
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM nodes").Scan(&stats.NodesCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count nodes: %w", err)
+	}
+
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM edges").Scan(&stats.EdgesCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count edges: %w", err)
+	}
+
+	// Extract unique file extensions to determine languages
+	rows, err := s.db.QueryContext(ctx, "SELECT DISTINCT file FROM nodes")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files for languages: %w", err)
+	}
+	defer rows.Close()
+
+	langMap := make(map[string]bool)
+	for rows.Next() {
+		var file string
+		if err := rows.Scan(&file); err != nil {
+			return nil, err
+		}
+		ext := filepath.Ext(file)
+		if ext != "" {
+			lang := ""
+			switch ext {
+			case ".go":
+				lang = "Go"
+			case ".py":
+				lang = "Python"
+			case ".ts":
+				lang = "TypeScript"
+			case ".rs":
+				lang = "Rust"
+			case ".js":
+				lang = "JavaScript"
+			default:
+				lang = ext[1:] // Remove the dot
+			}
+			if lang != "" {
+				langMap[lang] = true
+			}
+		}
+	}
+
+	for lang := range langMap {
+		stats.Languages = append(stats.Languages, lang)
+	}
+
+	return stats, nil
 }
 
 // GetNeighbors retrieves all outbound edges and target nodes for a given node ID.
