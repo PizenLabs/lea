@@ -45,13 +45,16 @@ Modern AI coding systems suffer from context window limitations, token inflation
 
 -   **Multi-Language AST Indexing**: Native support for **Go** (`go/ast`) and **Python**, **TypeScript**, and **Rust** via Tree-sitter.
 -   **Structural Graph Engine**: Models your codebase as a graph of functions, structs, interfaces, and their relationships (`CALLS`, `IMPLEMENTS`, `USES`).
--   **AI Context Compiler**: Generates high-signal, markdown-optimized context for LLMs (Claude, GPT, Gemini) using deterministic retrieval.
+-   **AI Context Compiler**: Generates high-signal, markdown-optimized context for LLMs (Claude, GPT, Gemini) using deterministic retrieval with **token-budget awareness**.
 -   **Model Context Protocol (MCP)**: Expose your codebase structure directly to AI agents via a standardized protocol.
--   **Workspace Metadata & Agent Export**: Automatically generate deterministic repository metadata (`WORKSPACE.md`) and reasoning protocols (`AGENT.md`) to teach AI agents how to navigate your codebase structurally.
+-   **Blast Radius Analysis**: Recursively trace incoming dependencies to determine the full impact of a code change, including direct/indirect callers, interfaces, and tests.
+-   **Symbol Discovery**: Official symbol registry for discovering available functions, structs, interfaces, and packages without manual grep.
+-   **Architectural Guardrails**: Define and enforce architectural boundaries using an explicit **Allow/Deny** rule engine.
+-   **Workspace Metadata & Agent Export**: Automatically generate deterministic repository metadata (`WORKSPACE.md`) and reasoning protocols (`AGENT.md`, `.agent-manifesto.md`) to teach AI agents how to navigate your codebase structurally.
 -   **Interactive TUI**: A rich, terminal-based explorer for fuzzy symbol navigation and dependency browsing.
 -   **Control Flow & Architecture**: Trace execution paths and detect boundary violations against architectural constraints.
+-   **Cross-Package Resolution**: Full support for repository-wide symbol resolution, including internal module calls and external package dependencies.
 -   **Incremental & Reactive**: Real-time graph updates using `fsnotify` without re-indexing the entire repository.
--   **Local-First**: Powered by an embedded SQLite database. Works offline and over SSH.
 
 ---
 
@@ -196,14 +199,15 @@ Lea bridges the gap between raw source code and AI reasoning by providing determ
 | Command | Description | Example |
 | :--- | :--- | :--- |
 | `index` | Build or update the structural graph | `lea index .` |
+| `symbols` | Discover and list symbols in the registry | `lea symbols auth -k interface` |
 | `tui` | Open the interactive symbol explorer | `lea tui` |
 | `mcp` | Start the Model Context Protocol server | `lea mcp` |
 | `export` | Generate AI agent configuration files | `lea export claude` |
-| `context` | Generate LLM-optimized context for a symbol | `lea context "type:internal/storage/sqlite:Store"` |
-| `trace` | Follow the call graph from a specific function | `lea trace "func:internal/cli/commands:Execute"` |
-| `flow` | Inspect ordered call flow within a symbol | `lea flow "func:internal/cli/commands:Execute"` |
+| `context` | Generate budget-aware context for a symbol | `lea context AuthService --budget 2000` |
+| `trace` | Follow the call graph from a specific function | `lea trace "func:internal/cli:Execute"` |
+| `flow` | Inspect ordered call flow within a symbol | `lea flow "func:internal/cli:Execute"` |
 | `neighbors` | Find immediate dependencies of a symbol | `lea neighbors AuthService` |
-| `impact` | Analyze the impact of changing a symbol | `lea impact TokenService` |
+| `impact` | Recursive blast-radius analysis of a symbol | `lea impact TokenService` |
 | `violations` | Check for architectural boundary violations | `lea violations --config arch.yaml` |
 | `watch` | Watch for file changes and update the graph | `lea watch .` |
 
@@ -275,7 +279,7 @@ sequenceDiagram
 - [x] **Phase 4: MCP Integration**: Standardized protocol for AI agent connectivity.
 - [x] **Phase 5: Interactive TUI**: Fuzzy navigation and visual dependency exploration.
 - [x] **Phase 6: Multi-Language Support**: Tree-sitter integration for Python, Rust, and TypeScript.
-- [x] **Phase 7: Advanced Retrieval**: Control flow analysis and architecture guardrails.
+- [x] **Phase 7: Advanced Retrieval**: Control flow, architecture guardrails, and blast radius.
 
 ---
 

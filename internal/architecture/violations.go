@@ -111,6 +111,14 @@ func (c *Config) Allowed(fromLayer, toLayer string) bool {
 	if layer == nil {
 		return c.AllowUnknown()
 	}
+
+	// Check explicit deny first
+	for _, denied := range layer.Deny {
+		if denied == toLayer {
+			return false
+		}
+	}
+
 	if len(layer.Allow) == 0 {
 		return c.DefaultAllowAll()
 	}

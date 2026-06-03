@@ -11,6 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	contextBudget int
+)
+
 var contextCmd = &cobra.Command{
 	Use:   "context [symbol_id]",
 	Short: "Generate AI-optimized context for a symbol",
@@ -28,7 +32,7 @@ var contextCmd = &cobra.Command{
 		compiler := aictx.NewCompiler(store)
 		ctx := context.Background()
 
-		output, err := compiler.Compile(ctx, symbolID)
+		output, err := compiler.CompileWithBudget(ctx, symbolID, contextBudget)
 		if err != nil {
 			return err
 		}
@@ -39,5 +43,6 @@ var contextCmd = &cobra.Command{
 }
 
 func init() {
+	contextCmd.Flags().IntVarP(&contextBudget, "budget", "b", 4000, "Maximum character budget for the context")
 	rootCmd.AddCommand(contextCmd)
 }

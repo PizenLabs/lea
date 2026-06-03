@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
+	graph "github.com/PizenLabs/lea/internal/graph/contracts"
 	"github.com/PizenLabs/lea/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +26,7 @@ var impactCmd = &cobra.Command{
 		defer func() { _ = store.Close() }()
 
 		ctx := context.Background()
-		nodes, edges, err := store.GetInboundEdges(ctx, symbolID)
+		nodes, edges, err := store.GetImpactRecursive(ctx, symbolID)
 		if err != nil {
 			return err
 		}
@@ -34,14 +36,78 @@ var impactCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("Impact of %s (symbols that depend on it):\n", symbolID)
-		for i, n := range nodes {
-			e := edges[i]
-			fmt.Printf("- %s (%s) [%s] at %s:%d\n", n.Name, n.Type, e.Type, n.File, n.Line)
+		fmt.Printf("Blast Radius Analysis for %s\n", symbolID)
+		fmt.Println("==================================================")
+
+		var direct []*graph.Node
+		var indirect []*graph.Node
+		var interfaces []*graph.Node
+		var tests []*graph.Node
+
+		seen := make(map[string]bool)
+
+		// Direct callers
+		for _, e := range edges {
+			if e.ToID == symbolID {
+				n := findNode(nodes, e.FromID)
+				if n != nil && !seen[n.ID] {
+					if isTest(n.File) {
+						tests = append(tests, n)
+					} else if n.Type == graph.NodeInterface {
+						interfaces = append(interfaces, n)
+					} else {
+						direct = append(direct, n)
+					}
+					seen[n.ID] = true
+				}
+			}
 		}
+
+		// Indirect callers
+		for _, n := range nodes {
+			if !seen[n.ID] {
+				if isTest(n.File) {
+					tests = append(tests, n)
+				} else if n.Type == graph.NodeInterface {
+					interfaces = append(interfaces, n)
+				} else {
+					indirect = append(indirect, n)
+				}
+				seen[n.ID] = true
+			}
+		}
+
+		printSection("Direct Callers", direct)
+		printSection("Indirect Callers", indirect)
+		printSection("Affected Interfaces", interfaces)
+		printSection("Affected Tests", tests)
 
 		return nil
 	},
+}
+
+func findNode(nodes []*graph.Node, id string) *graph.Node {
+	for _, n := range nodes {
+		if n.ID == id {
+			return n
+		}
+	}
+	return nil
+}
+
+func isTest(file string) bool {
+	base := filepath.Base(file)
+	return base == "test.go" || base == "test.ts" || strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.go") || strings.HasSuffix(base, "_test.ts") || strings.HasSuffix(base, ".test.go") || strings.HasSuffix(base, ".test.ts")
+}
+
+func printSection(title string, nodes []*graph.Node) {
+	if len(nodes) == 0 {
+		return
+	}
+	fmt.Printf("\n%s:\n", title)
+	for _, n := range nodes {
+		fmt.Printf("  - %s (%s) at %s:%d\n", n.Name, n.Type, n.File, n.Line)
+	}
 }
 
 func init() {

@@ -15,6 +15,7 @@ type Store interface {
 	ListNodes(ctx context.Context) ([]*graph.Node, error)
 	GetNeighbors(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
 	GetInboundEdges(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
+	GetImpactRecursive(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
 	ListEdges(ctx context.Context) ([]*graph.Edge, error)
 	GetStats(ctx context.Context) (*Stats, error)
 	DeleteNode(ctx context.Context, id string) error
