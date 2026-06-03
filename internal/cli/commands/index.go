@@ -43,6 +43,9 @@ var indexCmd = &cobra.Command{
 		defer func() { _ = store.Close() }()
 
 		goParser := golang.NewParser()
+		if modName := getModuleName(path); modName != "" {
+			goParser.SetModuleName(modName)
+		}
 		tsParser := treesitter.NewParser()
 		ctx := context.Background()
 		matcher := ignore.NewMatcher(path)
@@ -195,6 +198,22 @@ func formatLanguages(langs []string) string {
 		res = append(res, fmt.Sprintf("- %s", l))
 	}
 	return strings.Join(res, "\n")
+}
+
+func getModuleName(path string) string {
+	goModPath := filepath.Join(path, "go.mod")
+	data, err := os.ReadFile(goModPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		}
+	}
+	return ""
 }
 
 func init() {
