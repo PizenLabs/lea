@@ -185,6 +185,28 @@ Prefer structural navigation whenever possible.
 		return err
 	}
 
+	// .agent-manifesto.md
+	manifestoContent := `# Lea Agent Manifesto
+
+## Purpose
+This manifesto defines how AI agents should interact with this repository using Lea.
+
+## Workflow
+1. **Discover**: Use ` + "`" + `lea symbols` + "`" + ` to find relevant symbols.
+2. **Reason**: Use ` + "`" + `lea impact` + "`" + ` and ` + "`" + `lea flow` + "`" + ` to understand structural relationships and execution paths.
+3. **Context**: Use ` + "`" + `lea context` + "`" + ` with a budget to retrieve minimal necessary code context.
+4. **Modify**: Apply code changes.
+5. **Validate**: Use ` + "`" + `lea violations` + "`" + ` to ensure architectural integrity.
+
+## Principles
+- **Structure First**: Never read files blindly. Use the graph.
+- **Token Efficiency**: Use budget-aware context generation.
+- **Deterministic Reasoning**: Trust the call graph over semantic search when tracing execution.
+`
+	if err := os.WriteFile(filepath.Join(leaDir, ".agent-manifesto.md"), []byte(manifestoContent), 0644); err != nil {
+		return err
+	}
+
 	fmt.Printf("Generated metadata in %s\n", leaDir)
 	return nil
 }

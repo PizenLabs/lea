@@ -526,6 +526,72 @@ func (s *Store) GetInboundEdges(ctx context.Context, id string) ([]*graph.Node, 
 	return nodes, edges, nil
 }
 
+// GetImpactRecursive retrieves all recursive inbound edges and their source nodes for a given node ID.
+func (s *Store) GetImpactRecursive(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error) {
+	query := `
+		WITH RECURSIVE impact(from_id, to_id, type, sequence, metadata, depth) AS (
+			SELECT from_id, to_id, type, sequence, metadata, 1
+			FROM edges
+			WHERE to_id = ?
+			UNION ALL
+			SELECT e.from_id, e.to_id, e.type, e.sequence, e.metadata, i.depth + 1
+			FROM edges e
+			JOIN impact i ON e.to_id = i.from_id
+			WHERE i.depth < 10 -- Limit recursion depth
+		)
+		SELECT i.from_id, i.to_id, i.type, i.sequence, i.metadata, n.id, n.type, n.name, n.file, n.line, n.metadata
+		FROM impact i
+		JOIN nodes n ON i.from_id = n.id
+	`
+	rows, err := s.db.QueryContext(ctx, query, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var nodes []*graph.Node
+	var edges []*graph.Edge
+	seenNodes := make(map[string]bool)
+
+	for rows.Next() {
+		var e graph.Edge
+		var eType string
+		var eMetadataStr string
+		var n graph.Node
+		var nType string
+		var nMetadataStr string
+
+		err := rows.Scan(
+			&e.FromID, &e.ToID, &eType, &e.Sequence, &eMetadataStr,
+			&n.ID, &nType, &n.Name, &n.File, &n.Line, &nMetadataStr,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		e.Type = graph.EdgeType(eType)
+		if err := unmarshalMetadata(eMetadataStr, &e.Metadata); err != nil {
+			return nil, nil, err
+		}
+		edges = append(edges, &e)
+
+		if !seenNodes[n.ID] {
+			n.Type = graph.NodeType(nType)
+			if err := unmarshalMetadata(nMetadataStr, &n.Metadata); err != nil {
+				return nil, nil, err
+			}
+			nodes = append(nodes, &n)
+			seenNodes[n.ID] = true
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return nodes, edges, nil
+}
+
 // DeleteNode deletes a node by its ID.
 func (s *Store) DeleteNode(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM nodes WHERE id = ?`, id)

@@ -12,6 +12,7 @@ type Layer struct {
 	Name     string   `yaml:"name"`
 	Patterns []string `yaml:"patterns"`
 	Allow    []string `yaml:"allow"`
+	Deny     []string `yaml:"deny"`
 }
 
 // Settings contains global architecture validation settings.
