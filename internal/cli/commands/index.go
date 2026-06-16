@@ -228,14 +228,16 @@ func getModuleName(path string) string {
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	var module string
+	strings.SplitSeq(string(data), "\n")(func(line string) bool {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		if after, found := strings.CutPrefix(line, "module "); found {
+			module = strings.TrimSpace(after)
+			return false // stop iteration
 		}
-	}
-	return ""
+		return true
+	})
+	return module
 }
 
 func init() {
