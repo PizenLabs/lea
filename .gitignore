@@ -33,5 +33,4 @@ vendor/
 *.swp
 *.swo
 .commit_suggest_history.json
-report-issue/
 
