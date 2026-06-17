@@ -1,0 +1,54 @@
+version: 2
+
+project_name: lea
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: lea
+    main: ./cmd/lea
+    binary: lea
+
+    env:
+      - CGO_ENABLED=1
+
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -s -w
+
+    goos:
+      - linux
+      - darwin
+      - windows
+
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: lea-archive
+    formats: [tar.gz]
+
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+    name_template: >-
+      {{ .ProjectName }}_
+      {{ .Version }}_
+      {{ .Os }}_
+      {{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+release:
+  github:
+    owner: PizenLabs
+    name: lea
