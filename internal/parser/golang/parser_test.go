@@ -163,11 +163,11 @@ func TestParseInterface(t *testing.T) {
 
 	pkgPath := filepath.Dir(absPath)
 	expectedNodes := map[string]graph.NodeType{
-		"pkg:" + pkgPath:                         graph.NodePackage,
-		"type:" + pkgPath + ":Service":           graph.NodeInterface,
-		"method:" + pkgPath + ":Service.Login":   graph.NodeMethod,
-		"method:" + pkgPath + ":Service.Logout":  graph.NodeMethod,
-		"type:" + pkgPath + ":User":              graph.NodeStruct,
+		"pkg:" + pkgPath:                        graph.NodePackage,
+		"type:" + pkgPath + ":Service":          graph.NodeInterface,
+		"method:" + pkgPath + ":Service.Login":  graph.NodeMethod,
+		"method:" + pkgPath + ":Service.Logout": graph.NodeMethod,
+		"type:" + pkgPath + ":User":             graph.NodeStruct,
 	}
 
 	for id, nodeType := range expectedNodes {
