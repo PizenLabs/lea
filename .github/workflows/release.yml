@@ -4,39 +4,26 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
 
-      - name: Build release binaries
-        run: |
-          mkdir -p dist
-          VERSION=${{ github.event.release.tag_name }}
-
-          BIN=lea-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}
-
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            BIN="${BIN}.exe"
-          fi
-
-          GOOS=${{ matrix.goos }} \
-          GOARCH=${{ matrix.goarch }} \
-          go build \
-            -ldflags="-X main.version=${VERSION} -s -w" \
-            -o dist/$BIN ./cmd/lea
-
-      - uses: softprops/action-gh-release@v2
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          files: dist/*
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

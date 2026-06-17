@@ -9,11 +9,6 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -23,22 +18,15 @@ jobs:
 
       - name: Build snapshot
         run: |
-          mkdir -p dist
           VERSION=${GITHUB_REF_NAME}
+          mkdir -p dist
 
-          BIN=lea-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}
-
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            BIN="${BIN}.exe"
-          fi
-
-          GOOS=${{ matrix.goos }} \
-          GOARCH=${{ matrix.goarch }} \
           go build \
             -ldflags="-X main.version=${VERSION}" \
-            -o dist/$BIN ./cmd/lea
+            -o dist/lea \
+            ./cmd/lea
 
       - uses: actions/upload-artifact@v4
         with:
-          name: snapshot-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: lea-${{ github.ref_name }}
           path: dist/*
