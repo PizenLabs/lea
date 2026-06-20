@@ -125,6 +125,12 @@ var indexCmd = &cobra.Command{
 
 		fmt.Println("Indexing complete.")
 
+		// Pass 2: Deferred interface implementation resolution (Issue 3 fix)
+		// Scan all interfaces and structs, match method sets, and inject IMPLEMENTS edges
+		if err := resolveInterfaceImplementations(ctx, store); err != nil {
+			return fmt.Errorf("interface implementation resolution error: %w", err)
+		}
+
 		// Query compiled database metrics to construct the immutable telemetry payload
 		stats, err := store.GetStats(ctx)
 		if err != nil {
@@ -375,6 +381,126 @@ func parseGoMod(path string) (module string, requires []string) {
 }
 
 // detectFrameworks registers specific framework footprints to populate the static workspace information blocks.
+// resolveInterfaceImplementations performs deferred structural sub-typing resolution.
+// It matches concrete struct method sets against interface method signatures and
+// inserts IMPLEMENTS edges where a struct fully satisfies an interface (Issue 3 fix).
+func resolveInterfaceImplementations(ctx context.Context, store contracts.Store) error {
+	// Fetch all interface nodes
+	interfaces, err := store.ListNodesByType(ctx, graph.NodeInterface)
+	if err != nil {
+		return fmt.Errorf("failed to list interface nodes: %w", err)
+	}
+	if len(interfaces) == 0 {
+		return nil
+	}
+
+	// Fetch all struct nodes
+	structs, err := store.ListNodesByType(ctx, graph.NodeStruct)
+	if err != nil {
+		return fmt.Errorf("failed to list struct nodes: %w", err)
+	}
+	if len(structs) == 0 {
+		return nil
+	}
+
+	// Fetch all BELONGS_TO edges to build method-to-type mappings
+	belongsToEdges, err := store.GetEdgesByType(ctx, graph.EdgeBelongsTo)
+	if err != nil {
+		return fmt.Errorf("failed to list BELONGS_TO edges: %w", err)
+	}
+
+	// Build map: typeID -> set of methodIDs belonging to it
+	typeMethods := make(map[string]map[string]bool)
+	// Build reverse map: methodID -> belongs to typeID
+	methodOwner := make(map[string]string)
+
+	for _, e := range belongsToEdges {
+		// BELONGS_TO goes from method -> type (or type -> package, struct -> package)
+		// We need edges from method to type
+		// Check if FromID looks like a method ID (starts with "method:")
+		if strings.HasPrefix(e.FromID, "method:") {
+			methodOwner[e.FromID] = e.ToID
+			if typeMethods[e.ToID] == nil {
+				typeMethods[e.ToID] = make(map[string]bool)
+			}
+			typeMethods[e.ToID][e.FromID] = true
+		}
+	}
+
+	// Build interface method signatures: interfaceID -> set of method names
+	interfaceMethods := make(map[string]map[string]bool)
+	for _, iface := range interfaces {
+		if methods, ok := typeMethods[iface.ID]; ok {
+			methodNames := make(map[string]bool)
+			for methodID := range methods {
+				// Extract method name from methodID like "method:pkg:InterfaceName.MethodName"
+				// Split on last '.' to get the method name
+				if idx := strings.LastIndex(methodID, "."); idx >= 0 {
+					name := methodID[idx+1:]
+					methodNames[name] = true
+				}
+			}
+			interfaceMethods[iface.ID] = methodNames
+		} else {
+			// Interface with no methods (empty interface) - every struct implements it
+			interfaceMethods[iface.ID] = make(map[string]bool)
+		}
+	}
+
+	// Build struct method signatures: structID -> set of method names
+	structMethods := make(map[string]map[string]bool)
+	for _, s := range structs {
+		if methods, ok := typeMethods[s.ID]; ok {
+			methodNames := make(map[string]bool)
+			for methodID := range methods {
+				if idx := strings.LastIndex(methodID, "."); idx >= 0 {
+					name := methodID[idx+1:]
+					methodNames[name] = true
+				}
+			}
+			structMethods[s.ID] = methodNames
+		} else {
+			structMethods[s.ID] = make(map[string]bool)
+		}
+	}
+
+	// Count new edges for reporting
+	newEdges := 0
+
+	// For each interface, find structs whose method set is a superset of the interface method set
+	for ifaceID, ifaceMethods := range interfaceMethods {
+		for structID, sMethods := range structMethods {
+			// Check if struct satisfies all interface methods
+			satisfies := true
+			for methodName := range ifaceMethods {
+				if !sMethods[methodName] {
+					satisfies = false
+					break
+				}
+			}
+			if satisfies {
+				// Insert IMPLEMENTS edge from struct -> interface
+				edge := &graph.Edge{
+					FromID: structID,
+					ToID:   ifaceID,
+					Type:   graph.EdgeImplements,
+				}
+				if err := store.SaveEdge(ctx, edge); err != nil {
+					return fmt.Errorf("failed to save IMPLEMENTS edge from %s to %s: %w", structID, ifaceID, err)
+				}
+				newEdges++
+				fmt.Printf("  IMPLEMENTS: %s -> %s\n", structID, ifaceID)
+			}
+		}
+	}
+
+	if newEdges > 0 {
+		fmt.Printf("Resolved %d interface implementation(s).\n", newEdges)
+	}
+
+	return nil
+}
+
 func detectFrameworks(requires []string) []string {
 	known := map[string]string{
 		"github.com/spf13/cobra":   "cobra",

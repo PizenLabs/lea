@@ -610,6 +610,65 @@ func (s *Store) DeleteEdgesFrom(ctx context.Context, id string) error {
 	return err
 }
 
+// ListNodesByType returns all nodes of a specific node type.
+func (s *Store) ListNodesByType(ctx context.Context, nodeType graph.NodeType) ([]*graph.Node, error) {
+	query := `SELECT id, type, name, file, line, metadata FROM nodes WHERE type = ?`
+	rows, err := s.db.QueryContext(ctx, query, string(nodeType))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var nodes []*graph.Node
+	for rows.Next() {
+		var node graph.Node
+		var metadataStr string
+		var nType string
+		err := rows.Scan(&node.ID, &nType, &node.Name, &node.File, &node.Line, &metadataStr)
+		if err != nil {
+			return nil, err
+		}
+		node.Type = graph.NodeType(nType)
+		if err := unmarshalMetadata(metadataStr, &node.Metadata); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, &node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+// GetEdgesByType returns all edges of a specific edge type.
+func (s *Store) GetEdgesByType(ctx context.Context, edgeType graph.EdgeType) ([]*graph.Edge, error) {
+	query := `SELECT from_id, to_id, type, sequence, metadata FROM edges WHERE type = ?`
+	rows, err := s.db.QueryContext(ctx, query, string(edgeType))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var edges []*graph.Edge
+	for rows.Next() {
+		var edge graph.Edge
+		var eType string
+		var metadataStr string
+		if err := rows.Scan(&edge.FromID, &edge.ToID, &eType, &edge.Sequence, &metadataStr); err != nil {
+			return nil, err
+		}
+		edge.Type = graph.EdgeType(eType)
+		if err := unmarshalMetadata(metadataStr, &edge.Metadata); err != nil {
+			return nil, err
+		}
+		edges = append(edges, &edge)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return edges, nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()

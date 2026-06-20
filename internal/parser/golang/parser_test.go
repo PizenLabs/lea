@@ -2,6 +2,7 @@ package golang
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 func TestParseFile(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
-	path := "../../../testdata/golang/simple.go"
+	path := "../../../testdata/esc/golang/simple.go"
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
@@ -67,10 +68,16 @@ func TestParseFile(t *testing.T) {
 func TestExtractCalls(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
-	path := "../../../testdata/golang/simple.go"
+	path := "../../../testdata/esc/golang/simple.go"
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// First parse the file to build local type registry (needed for calc.Add resolution)
+	_, _, err = p.ParseFile(ctx, absPath)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
 	}
 
 	edges, err := p.ExtractCalls(ctx, absPath)
@@ -85,6 +92,8 @@ func TestExtractCalls(t *testing.T) {
 	}{
 		{from: "method:" + pkgPath + ":Calculator.Add", to: "func:fmt:Println"},
 		{from: "func:" + pkgPath + ":Main", to: "func:" + pkgPath + ":Add"},
+		// calc.Add(5) should now resolve through local type inference instead of "unknown:calc.Add"
+		{from: "func:" + pkgPath + ":Main", to: "method:" + pkgPath + ":Calculator.Add"},
 	}
 
 	for _, ee := range expectedEdges {
@@ -104,10 +113,16 @@ func TestExtractCalls(t *testing.T) {
 func TestExtractControlFlow(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
-	path := "../../../testdata/golang/simple.go"
+	path := "../../../testdata/esc/golang/simple.go"
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// First parse the file to build local type registry (needed for calc.Add resolution)
+	_, _, err = p.ParseFile(ctx, absPath)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
 	}
 
 	edges, err := p.ExtractControlFlow(ctx, absPath)
@@ -120,8 +135,7 @@ func TestExtractControlFlow(t *testing.T) {
 	}
 
 	// In Main, we expect calc.Add(5) then Add(1, 2) then fmt.Println(res)
-	// Note: calc.Add(5) might be tricky if not resolved.
-	// Current implementation: calc.Add is a SelectorExpr, becomes unknown:calc.Add
+	// Now calc.Add(5) should resolve through local type inference
 
 	pkgPath := filepath.Dir(absPath)
 	mainID := "func:" + pkgPath + ":Main"
@@ -130,7 +144,7 @@ func TestExtractControlFlow(t *testing.T) {
 	foundInternalAdd := false
 	for _, e := range edges {
 		if e.FromID == mainID {
-			if e.ToID == "unknown:calc.Add" {
+			if e.ToID == fmt.Sprintf("method:%s:Calculator.Add", pkgPath) {
 				foundAdd = true
 			}
 			if e.ToID == "func:"+pkgPath+":Add" {
@@ -140,7 +154,12 @@ func TestExtractControlFlow(t *testing.T) {
 	}
 
 	if !foundAdd {
-		t.Errorf("Expected call to calc.Add in Main flow not found")
+		t.Errorf("Expected call to Calculator.Add in Main flow not found (got %s)", pkgPath)
+		for _, e := range edges {
+			if e.FromID == mainID {
+				t.Logf("  Edge: %s -> %s", e.FromID, e.ToID)
+			}
+		}
 	}
 	if !foundInternalAdd {
 		t.Errorf("Expected call to Add in Main flow not found")
@@ -150,7 +169,7 @@ func TestExtractControlFlow(t *testing.T) {
 func TestParseInterface(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
-	path := "../../../testdata/golang/interface.go"
+	path := "../../../testdata/esc/golang/interface.go"
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)

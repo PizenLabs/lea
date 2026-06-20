@@ -14,7 +14,7 @@ var neighborsCmd = &cobra.Command{
 	Short: "Find neighbors of a symbol",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		symbolID := args[0]
+		input := args[0]
 
 		dbPath := filepath.Join(".lea", "graph.db")
 		store, err := sqlite.NewStore(dbPath)
@@ -24,6 +24,13 @@ var neighborsCmd = &cobra.Command{
 		defer func() { _ = store.Close() }()
 
 		ctx := context.Background()
+
+		// Normalize user input to a proper symbol ID (Issue 4 fix)
+		symbolID, err := resolveSymbolID(ctx, store, input)
+		if err != nil {
+			return err
+		}
+
 		nodes, edges, err := store.GetNeighbors(ctx, symbolID)
 		if err != nil {
 			return err
