@@ -24,15 +24,69 @@ func init() {
 	// Root flags if any
 }
 
+// normalizeSymbolInput strips common prefixes and path artifacts from user input
+// to produce a clean candidate for symbol lookup.
+func normalizeSymbolInput(input string) string {
+	s := input
+	// Strip surrounding whitespace
+	s = strings.TrimSpace(s)
+
+	// Strip common runtime prefixes (e.g., absolute file paths, $PWD, etc.)
+	if strings.HasPrefix(s, "/") {
+		// Absolute path prefix: strip down to last meaningful component
+		if strings.Contains(s, ":") {
+			parts := strings.SplitN(s, ":", 2)
+			if len(parts) == 2 && strings.HasPrefix(parts[0], "/") {
+				s = parts[1]
+			} else {
+				s = parts[1]
+			}
+		}
+	}
+
+	// Strip graph node type prefixes (func:, method:, type:, pkg:) if they appear mid-input
+	s = strings.TrimPrefix(s, "func:")
+	s = strings.TrimPrefix(s, "method:")
+	s = strings.TrimPrefix(s, "type:")
+	s = strings.TrimPrefix(s, "pkg:")
+
+	// Strip module path prefix up to the first meaningful path component.
+	// e.g., "github.com/PizenLabs/lea/internal/domain:WalletRepository" becomes "internal/domain:WalletRepository"
+	if strings.Contains(s, ":") && !strings.HasPrefix(s, "internal/") {
+		parts := strings.SplitN(s, ":", 2)
+		// Check if the left side contains a full module path
+		if strings.Count(parts[0], "/") > 1 {
+			// Extract last meaningful path segment after the module
+			pathParts := strings.Split(parts[0], "/")
+			// Find the "internal" or first meaningful segment
+			idx := -1
+			for i, p := range pathParts {
+				if p == "internal" || p == "cmd" || p == "pkg" || p == "testdata" {
+					idx = i
+					break
+				}
+			}
+			if idx > 0 {
+				s = strings.Join(pathParts[idx:], "/") + ":" + parts[1]
+			}
+		}
+	}
+
+	// If the input is a simple identifier (e.g., "UpdateBalance"), leave as-is
+	return s
+}
+
 // resolveSymbolID normalizes user input for symbol lookups (Issue 4 fix).
 // It tries multiple strategies:
 // 1. Exact match as-is
 // 2. Try with func:/method:/type: prefixes
 // 3. Fuzzy suffix/contains match against all node IDs
-// 4. LIKE wildcard query
 func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (string, error) {
-	// Strategy 1: Exact match
-	node, err := store.GetNode(ctx, input)
+	// Normalize input first (strip absolute paths, runtime prefixes, module prefixes)
+	normalized := normalizeSymbolInput(input)
+
+	// Strategy 1: Exact match on normalized input
+	node, err := store.GetNode(ctx, normalized)
 	if err != nil {
 		return "", fmt.Errorf("error looking up symbol: %w", err)
 	}
@@ -40,10 +94,10 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 		return node.ID, nil
 	}
 
-	// Strategy 2: Try common prefixes
-	prefixes := []string{"func:", "method:", "type:"}
+	// Strategy 2: Try with graph prefixes
+	prefixes := []string{"func:", "method:", "type:", "pkg:"}
 	for _, prefix := range prefixes {
-		node, err = store.GetNode(ctx, prefix+input)
+		node, err = store.GetNode(ctx, prefix+normalized)
 		if err != nil {
 			return "", fmt.Errorf("error looking up symbol: %w", err)
 		}
@@ -58,18 +112,18 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 		return "", fmt.Errorf("error listing nodes for fuzzy match: %w", err)
 	}
 
-	// Try suffix match first: input matches the end of ID
+	// Try suffix match first: normalized input matches the end of ID
 	var candidates []string
 	for _, n := range allNodes {
-		if strings.HasSuffix(n.ID, ":"+input) || strings.HasSuffix(n.ID, "."+input) {
+		if strings.HasSuffix(n.ID, ":"+normalized) || strings.HasSuffix(n.ID, "."+normalized) {
 			candidates = append(candidates, n.ID)
 		}
 	}
 
-	// Try name match: input matches the Name field
+	// Try name match: normalized input matches the Name field
 	if len(candidates) == 0 {
 		for _, n := range allNodes {
-			if strings.EqualFold(n.Name, input) || strings.Contains(strings.ToLower(n.Name), strings.ToLower(input)) {
+			if strings.EqualFold(n.Name, normalized) || strings.Contains(strings.ToLower(n.Name), strings.ToLower(normalized)) {
 				candidates = append(candidates, n.ID)
 			}
 		}
@@ -77,7 +131,7 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 
 	// Try contains match in ID
 	if len(candidates) == 0 {
-		lowerInput := strings.ToLower(input)
+		lowerInput := strings.ToLower(normalized)
 		for _, n := range allNodes {
 			if strings.Contains(strings.ToLower(n.ID), lowerInput) {
 				candidates = append(candidates, n.ID)

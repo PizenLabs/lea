@@ -537,7 +537,12 @@ func (s *Store) GetImpactRecursive(ctx context.Context, id string) ([]*graph.Nod
 			SELECT e.from_id, e.to_id, e.type, e.sequence, e.metadata, i.depth + 1
 			FROM edges e
 			JOIN impact i ON e.to_id = i.from_id
-			WHERE i.depth < 10 -- Limit recursion depth
+			WHERE i.depth < 10
+			UNION ALL
+			SELECT e.from_id, e.to_id, e.type, e.sequence, e.metadata, i.depth + 1
+			FROM edges e
+			JOIN impact i ON e.from_id = i.from_id AND e.type = 'IMPLEMENTS_METHOD'
+			WHERE i.depth < 10
 		)
 		SELECT i.from_id, i.to_id, i.type, i.sequence, i.metadata, n.id, n.type, n.name, n.file, n.line, n.metadata
 		FROM impact i

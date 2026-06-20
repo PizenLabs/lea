@@ -490,6 +490,38 @@ func resolveInterfaceImplementations(ctx context.Context, store contracts.Store)
 				}
 				newEdges++
 				fmt.Printf("  IMPLEMENTS: %s -> %s\n", structID, ifaceID)
+
+				// Pass 2: Explicit method-to-interface linking (Issue 1 fix)
+				// Create IMPLEMENTS_METHOD edges at the method granularity
+				for methodName := range ifaceMethods {
+					// Find concrete method on struct
+					concreteMethodID := ""
+					for mid := range typeMethods[structID] {
+						if idx := strings.LastIndex(mid, "."); idx >= 0 && mid[idx+1:] == methodName {
+							concreteMethodID = mid
+							break
+						}
+					}
+					// Find interface method on interface
+					ifaceMethodID := ""
+					for mid := range typeMethods[ifaceID] {
+						if idx := strings.LastIndex(mid, "."); idx >= 0 && mid[idx+1:] == methodName {
+							ifaceMethodID = mid
+							break
+						}
+					}
+					if concreteMethodID != "" && ifaceMethodID != "" {
+						methodEdge := &graph.Edge{
+							FromID: concreteMethodID,
+							ToID:   ifaceMethodID,
+							Type:   graph.EdgeImplementsMethod,
+						}
+						if err := store.SaveEdge(ctx, methodEdge); err != nil {
+							return fmt.Errorf("failed to save IMPLEMENTS_METHOD edge from %s to %s: %w", concreteMethodID, ifaceMethodID, err)
+						}
+						fmt.Printf("  IMPLEMENTS_METHOD: %s -> %s\n", concreteMethodID, ifaceMethodID)
+					}
+				}
 			}
 		}
 	}

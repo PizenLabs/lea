@@ -642,7 +642,7 @@ func (p *Parser) resolveCallTarget(ce *ast.CallExpr, imports map[string]string, 
 				currentType := fmt.Sprintf("%s:%s", typeParts[0], typeParts[1])
 				resolved := true
 				for i := 1; i < len(parts)-1; i++ {
-					fieldType := p.resolveFieldType(currentType, parts[i])
+					fieldType := p.resolveFieldType(currentType, parts[i], imports)
 					if fieldType == "" {
 						resolved = false
 						break
@@ -692,7 +692,9 @@ func (p *Parser) typeKeyToMethodURI(currentType, methodName string, imports map[
 }
 
 // resolveFieldType looks up the type of a field on a struct type from the struct registry.
-func (p *Parser) resolveFieldType(structKey string, fieldName string) string {
+// For package-qualified field types (e.g., "domain.WalletRepository"), it resolves the
+// import to produce a fully qualified "pkgPath:TypeName" key, preventing unknown: fallbacks.
+func (p *Parser) resolveFieldType(structKey string, fieldName string, imports map[string]string) string {
 	if p.structIndex == nil {
 		return ""
 	}
@@ -707,6 +709,19 @@ func (p *Parser) resolveFieldType(structKey string, fieldName string) string {
 			fieldType = strings.TrimPrefix(fieldType, "*")
 			if strings.Contains(fieldType, ".") {
 				// Package-qualified type like "domain.WalletRepository"
+				// Resolve through imports to produce "pkgPath:TypeName" format
+				subParts := strings.SplitN(fieldType, ".", 2)
+				if len(subParts) == 2 {
+					if pkgPath2, ok := imports[subParts[0]]; ok {
+						if p.moduleName != "" && strings.HasPrefix(pkgPath2, p.moduleName) {
+							rel := strings.TrimPrefix(pkgPath2, p.moduleName)
+							rel = strings.TrimPrefix(rel, "/")
+							return fmt.Sprintf("%s:%s", rel, subParts[1])
+						}
+						return fmt.Sprintf("%s:%s", pkgPath2, subParts[1])
+					}
+				}
+				// Fallback: return unqualified form; typeKeyToMethodURI will also try imports
 				return fieldType
 			}
 			return fmt.Sprintf("%s:%s", si.PkgPath, fieldType)
