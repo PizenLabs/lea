@@ -52,6 +52,13 @@ var indexCmd = &cobra.Command{
 		if modName != "" {
 			goParser.SetModuleName(modName)
 		}
+
+		// Resolve to an absolute path for canonical package path computation
+		absRoot, err := filepath.Abs(path)
+		if err != nil {
+			absRoot = path
+		}
+		goParser.SetRootPath(absRoot)
 		tsParser := treesitter.NewParser()
 		ctx := context.Background()
 		matcher := ignore.NewMatcher(path)

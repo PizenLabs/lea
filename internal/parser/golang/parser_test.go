@@ -90,7 +90,7 @@ func TestExtractCalls(t *testing.T) {
 		from string
 		to   string
 	}{
-		{from: "method:" + pkgPath + ":Calculator.Add", to: "func:fmt:Println"},
+		{from: "method:" + pkgPath + ":Calculator.Add", to: "stdlib:fmt:Println"},
 		{from: "func:" + pkgPath + ":Main", to: "func:" + pkgPath + ":Add"},
 		// calc.Add(5) should now resolve through local type inference instead of "unknown:calc.Add"
 		{from: "func:" + pkgPath + ":Main", to: "method:" + pkgPath + ":Calculator.Add"},
@@ -246,7 +246,7 @@ func TestCrossPackageResolution(t *testing.T) {
 	}
 
 	target2 := p.resolveID("fmt.Println", imports, pkgPath)
-	expected2 := "func:fmt:Println"
+	expected2 := "stdlib:fmt:Println"
 	if target2 != expected2 {
 		t.Errorf("Expected %s, got %s", expected2, target2)
 	}

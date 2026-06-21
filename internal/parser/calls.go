@@ -52,7 +52,7 @@ func (cp *CallParser) ExtractCalls(_ context.Context, path string) ([]*graph.Edg
 		switch x := n.(type) {
 		case *ast.FuncDecl:
 			currentFunc = cp.funcID(x, cp.pkgPath)
-			// Track receiver variable
+			// Track receiver variable for deep selector resolution
 			if x.Recv != nil {
 				if recvType := getReceiverType(x.Recv); recvType != "" {
 					if len(x.Recv.List) > 0 && len(x.Recv.List[0].Names) > 0 {
@@ -63,6 +63,50 @@ func (cp *CallParser) ExtractCalls(_ context.Context, path string) ([]*graph.Edg
 					}
 				}
 			}
+
+		case *ast.GenDecl:
+			// Track variable assignments to build local type table
+			if cp.reg != nil {
+				for _, spec := range x.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) == 0 || vs.Type != nil {
+						continue
+					}
+					for _, val := range vs.Values {
+						cp.trackAssignmentVar(val, vs.Names[0].Name)
+					}
+				}
+			}
+
+		case *ast.TypeSpec:
+			// Register struct types and their fields for deep selector resolution
+			if cp.reg != nil {
+				if st, ok := x.Type.(*ast.StructType); ok {
+					typeName := x.Name.Name
+					var fields []StructFieldInfo
+					for _, field := range st.Fields.List {
+						if len(field.Names) == 0 {
+							continue
+						}
+						fieldName := field.Names[0].Name
+						fieldTypeStr := selectorChainString(field.Type)
+						fields = append(fields, StructFieldInfo{
+							FieldName: fieldName,
+							FieldType: fieldTypeStr,
+						})
+					}
+					cp.reg.RegisterStruct(cp.pkgPath, typeName, fields)
+				}
+			}
+
+		case *ast.AssignStmt:
+			// Track short variable declarations like repo := repository.NewInMem()
+			if cp.reg != nil && x.Tok == token.DEFINE && len(x.Lhs) == 1 && len(x.Rhs) == 1 {
+				if ident, ok := x.Lhs[0].(*ast.Ident); ok {
+					cp.trackAssignmentVar(x.Rhs[0], ident.Name)
+				}
+			}
+
 		case *ast.CallExpr:
 			if currentFunc == "" {
 				return true
@@ -92,6 +136,44 @@ func (cp *CallParser) ExtractControlFlow(_ context.Context, path string) ([]*gra
 	cp.imports = extractImports(f)
 	cp.edges = nil
 	cp.order = 0
+
+	// Pre-pass: register struct types and top-level variables for deep selector resolution
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.TypeSpec:
+			if cp.reg != nil {
+				if st, ok := x.Type.(*ast.StructType); ok {
+					typeName := x.Name.Name
+					var fields []StructFieldInfo
+					for _, field := range st.Fields.List {
+						if len(field.Names) == 0 {
+							continue
+						}
+						fieldName := field.Names[0].Name
+						fieldTypeStr := selectorChainString(field.Type)
+						fields = append(fields, StructFieldInfo{
+							FieldName: fieldName,
+							FieldType: fieldTypeStr,
+						})
+					}
+					cp.reg.RegisterStruct(cp.pkgPath, typeName, fields)
+				}
+			}
+		case *ast.GenDecl:
+			if cp.reg != nil {
+				for _, spec := range x.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) == 0 || vs.Type != nil {
+						continue
+					}
+					for _, val := range vs.Values {
+						cp.trackAssignmentVar(val, vs.Names[0].Name)
+					}
+				}
+			}
+		}
+		return true
+	})
 
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -197,13 +279,148 @@ func selectorChainString(expr ast.Expr) string {
 	}
 }
 
+// trackAssignmentVar records the inferred type of a variable from its right-hand side expression.
+// This populates the TypeRegistry's LocalVarTypes table for resolving method calls on variables.
+func (cp *CallParser) trackAssignmentVar(rhs ast.Expr, varName string) {
+	switch val := rhs.(type) {
+	case *ast.CallExpr:
+		// varName := NewConstructor() or varName := package.NewConstructor()
+		switch fun := val.Fun.(type) {
+		case *ast.Ident:
+			// NewConstructor() - infer type from function name (strip "New" prefix)
+			typeName := strings.TrimPrefix(fun.Name, "New")
+			if typeName != "" && typeName != fun.Name {
+				cp.reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", cp.pkgPath, typeName)
+			}
+		case *ast.SelectorExpr:
+			// package.NewConstructor() - resolve alias to canonical path
+			if id, ok := fun.X.(*ast.Ident); ok {
+				pkgAlias := id.Name
+				typeName := strings.TrimPrefix(fun.Sel.Name, "New")
+				if typeName != "" && typeName != fun.Sel.Name {
+					// Resolve import alias to canonical package path
+					canonPkg := pkgAlias
+					if path, ok := cp.imports[pkgAlias]; ok {
+						if cp.reg.ModuleName != "" && strings.HasPrefix(path, cp.reg.ModuleName) {
+							canonPkg = strings.TrimPrefix(path, cp.reg.ModuleName)
+							canonPkg = strings.TrimPrefix(canonPkg, "/")
+						} else {
+							canonPkg = path
+						}
+					}
+					cp.reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, typeName)
+				}
+			}
+		}
+	case *ast.UnaryExpr:
+		if val.Op == token.AND {
+			// varName := &Type{}
+			if comp, ok := val.X.(*ast.CompositeLit); ok {
+				if t, ok := comp.Type.(*ast.Ident); ok {
+					cp.reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", cp.pkgPath, t.Name)
+				}
+				if t, ok := comp.Type.(*ast.SelectorExpr); ok {
+					if id, ok := t.X.(*ast.Ident); ok {
+						pkgAlias := id.Name
+						canonPkg := pkgAlias
+						if path, ok := cp.imports[pkgAlias]; ok {
+							if cp.reg.ModuleName != "" && strings.HasPrefix(path, cp.reg.ModuleName) {
+								canonPkg = strings.TrimPrefix(path, cp.reg.ModuleName)
+								canonPkg = strings.TrimPrefix(canonPkg, "/")
+							} else {
+								canonPkg = path
+							}
+						}
+						cp.reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, t.Sel.Name)
+					}
+				}
+			}
+		}
+	case *ast.CompositeLit:
+		// varName := Type{}
+		if t, ok := val.Type.(*ast.Ident); ok {
+			cp.reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", cp.pkgPath, t.Name)
+		}
+	}
+}
+
+// trackAssignVarFromExpr records the inferred type of a variable from its right-hand side expression.
+// This is a package-level standalone function for use from walkStmt.
+func trackAssignVarFromExpr(rhs ast.Expr, varName string, reg *TypeRegistry, imports map[string]string, pkgPath string) {
+	if reg == nil {
+		return
+	}
+	switch val := rhs.(type) {
+	case *ast.CallExpr:
+		switch fun := val.Fun.(type) {
+		case *ast.Ident:
+			typeName := strings.TrimPrefix(fun.Name, "New")
+			if typeName != "" && typeName != fun.Name {
+				reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, typeName)
+			}
+		case *ast.SelectorExpr:
+			if id, ok := fun.X.(*ast.Ident); ok {
+				pkgAlias := id.Name
+				typeName := strings.TrimPrefix(fun.Sel.Name, "New")
+				if typeName != "" && typeName != fun.Sel.Name {
+					canonPkg := pkgAlias
+					if path, ok := imports[pkgAlias]; ok {
+						if reg.ModuleName != "" && strings.HasPrefix(path, reg.ModuleName) {
+							canonPkg = strings.TrimPrefix(path, reg.ModuleName)
+							canonPkg = strings.TrimPrefix(canonPkg, "/")
+						} else {
+							canonPkg = path
+						}
+					}
+					reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, typeName)
+				}
+			}
+		}
+	case *ast.UnaryExpr:
+		if val.Op == token.AND {
+			if comp, ok := val.X.(*ast.CompositeLit); ok {
+				if t, ok := comp.Type.(*ast.Ident); ok {
+					reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, t.Name)
+				}
+				if t, ok := comp.Type.(*ast.SelectorExpr); ok {
+					if id, ok := t.X.(*ast.Ident); ok {
+						pkgAlias := id.Name
+						canonPkg := pkgAlias
+						if path, ok := imports[pkgAlias]; ok {
+							if reg.ModuleName != "" && strings.HasPrefix(path, reg.ModuleName) {
+								canonPkg = strings.TrimPrefix(path, reg.ModuleName)
+								canonPkg = strings.TrimPrefix(canonPkg, "/")
+							} else {
+								canonPkg = path
+							}
+						}
+						reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, t.Sel.Name)
+					}
+				}
+			}
+		}
+	case *ast.CompositeLit:
+		if t, ok := val.Type.(*ast.Ident); ok {
+			reg.LocalVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, t.Name)
+		}
+	}
+}
+
 // resolveCallTarget is a fallback resolution without TypeRegistry.
 func resolveCallTarget(target string, imports map[string]string, pkgPath string) string {
+	// Handle built-in functions (no dot, no import resolution needed)
 	if !strings.Contains(target, ".") {
+		if isBuiltinFunc(target) {
+			return fmt.Sprintf("stdlib:builtin:%s", target)
+		}
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
 	}
 	parts := strings.SplitN(target, ".", 2)
 	if path, ok := imports[parts[0]]; ok {
+		// Go standard library package (fmt, os, context, etc.)
+		if isStdlibImport(path) {
+			return fmt.Sprintf("stdlib:%s:%s", path, parts[1])
+		}
 		return fmt.Sprintf("func:%s:%s", path, parts[1])
 	}
 	return fmt.Sprintf("unknown:%s", target)
@@ -223,6 +440,14 @@ type flowContext struct {
 
 func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge) {
 	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Track short variable declarations like calc := &Calculator{}
+		if reg != nil && s.Tok == token.DEFINE && len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+			if ident, ok := s.Lhs[0].(*ast.Ident); ok {
+				trackAssignVarFromExpr(s.Rhs[0], ident.Name, reg, imports, pkgPath)
+			}
+		}
+		collectCallsFromNode(s, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
 	case *ast.BlockStmt:
 		walkStmtList(s.List, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
 	case *ast.IfStmt:

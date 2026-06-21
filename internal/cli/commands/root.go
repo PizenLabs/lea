@@ -203,5 +203,3 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 
 	return "", fmt.Errorf("symbol %q not found in the graph. Use 'lea symbols' to list available symbols", input)
 }
-
-

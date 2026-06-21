@@ -157,7 +157,7 @@ func TestTypeRegistry_ResolveCallTarget(t *testing.T) {
 		{
 			target:   "fmt.Println",
 			pkgPath:  "cmd/lea",
-			expected: "func:fmt:Println",
+			expected: "stdlib:fmt:Println",
 		},
 		{
 			target:   "service.NewPaymentService",
@@ -249,7 +249,7 @@ func TestCrossPackageResolution(t *testing.T) {
 		expected string
 	}{
 		{"contracts.SomeFunc", "func:internal/graph/contracts:SomeFunc"},
-		{"fmt.Println", "func:fmt:Println"},
+		{"fmt.Println", "stdlib:fmt:Println"},
 		{"LocalFunc", "func:cmd/lea:LocalFunc"},
 	}
 
@@ -287,7 +287,7 @@ func TestExtractCalls_WithTypeRegistry(t *testing.T) {
 
 	// Verify package-level func resolution
 	funcID := reg.ResolveCallTarget("fmt.Println", imports, "cmd/lea")
-	expectedFunc := "func:fmt:Println"
+	expectedFunc := "stdlib:fmt:Println"
 	if funcID != expectedFunc {
 		t.Errorf("fmt.Println resolved to %q, want %q", funcID, expectedFunc)
 	}
@@ -328,17 +328,22 @@ func TestExtractCalls_PaymentService(t *testing.T) {
 	foundUpdate := false
 	for _, e := range edges {
 		if e.FromID == expectedFrom && e.Type == graph.EdgeCalls {
-			if e.ToID == "func:fmt:Println" || e.ToID == "unknown:s.log.Info" {
+			if e.ToID == "method:gopump/pkg/logger:Logger.Info" || e.ToID == "stdlib:fmt:Sprintf" || e.ToID == "stdlib:fmt:Println" {
 				foundInfo = true
 			}
-			if e.ToID == "unknown:s.repo.UpdateBalance" {
+			if e.ToID == "method:gopump/internal/domain:WalletRepository.UpdateBalance" {
 				foundUpdate = true
 			}
 		}
 	}
 
 	if !foundInfo {
-		t.Errorf("Expected a CALLS edge from %s to s.log.Info or fmt.Println", expectedFrom)
+		t.Errorf("Expected a CALLS edge from %s to s.log.Info or fmt.Println, got:\n", expectedFrom)
+		for _, e := range edges {
+			if e.FromID == expectedFrom {
+				t.Logf("  Edge: %s (%s) -> %s", e.FromID, e.Type, e.ToID)
+			}
+		}
 	}
 	if !foundUpdate {
 		t.Errorf("Expected a CALLS edge from %s to s.repo.UpdateBalance", expectedFrom)
@@ -567,7 +572,7 @@ func TestResolveCallTarget_Fallback(t *testing.T) {
 		expected string
 	}{
 		{"LocalFunc", "pkg", "func:pkg:LocalFunc"},
-		{"fmt.Println", "pkg", "func:fmt:Println"},
+		{"fmt.Println", "pkg", "stdlib:fmt:Println"},
 		{"unknown.Target", "pkg", "unknown:unknown.Target"},
 	}
 
