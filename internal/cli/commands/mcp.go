@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 
 	"github.com/PizenLabs/lea/internal/mcp"
+	"github.com/PizenLabs/lea/internal/mcp/install"
 	"github.com/PizenLabs/lea/internal/storage/sqlite"
 	"github.com/spf13/cobra"
 )
@@ -25,6 +26,18 @@ var mcpCmd = &cobra.Command{
 	},
 }
 
+var mcpInstallCmd = &cobra.Command{
+	Use:   "install",
+	Short: "Configure MCP entries for lea and lx across AI tools",
+	Long: `Installs MCP server entries (pizen-lea and pizen-lynx) into the configuration
+files of supported AI coding agents: Claude Code, VS Code (Cline/Roo Code/Codex CLI),
+OpenCode, Pi, Zed, Gemini CLI, OpenClaw, Aider, Antigravity, Kiro, and KiloCode.`,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		return install.Run()
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(mcpCmd)
+	mcpCmd.AddCommand(mcpInstallCmd)
 }

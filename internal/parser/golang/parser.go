@@ -44,8 +44,6 @@ func isStdlibImport(importPath, moduleName string) bool {
 	return !strings.Contains(firstSeg, ".")
 }
 
-
-
 // StructFieldInfo holds the type information for a struct field.
 type StructFieldInfo struct {
 	FieldName string // The name of the field

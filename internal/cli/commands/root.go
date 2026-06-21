@@ -77,7 +77,6 @@ func normalizeSymbolInput(input string) string {
 	return s
 }
 
-
 // resolveSymbolID normalizes user input for symbol lookups (Issue 4 fix).
 // It tries multiple strategies:
 // 1. Exact match as-is
