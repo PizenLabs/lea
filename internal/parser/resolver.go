@@ -3,6 +3,7 @@ package parser
 
 import (
 	"fmt"
+	"go/ast"
 	"strings"
 )
 
@@ -96,11 +97,29 @@ func (tr *TypeRegistry) RegisterStruct(pkgPath, typeName string, fields []Struct
 	}
 }
 
-// ResolveMethodID resolves a simple selector expression (var.method)
+// UnwindSelector recursively unwinds a selector expression chain, returning the
+// base identifier and the ordered chain of field/method names.
+// Example: for a.b.c(), returns (ident("a"), ["b", "c"]).
+func UnwindSelector(expr *ast.SelectorExpr) (baseIdent *ast.Ident, chains []string) {
+	current := expr
+	for {
+		chains = append([]string{current.Sel.Name}, chains...)
+		if next, ok := current.X.(*ast.SelectorExpr); ok {
+			current = next
+		} else if ident, ok := current.X.(*ast.Ident); ok {
+			baseIdent = ident
+			break
+		} else {
+			break
+		}
+	}
+	return baseIdent, chains
+}
+
+// ResolveMethodID resolves a selector expression (var.method or var.field.sub.method)
 // to a canonical method node ID.
-// Only handles 2-part selectors (e.g., "svc.ProcessDeposit").
-// Multi-part selectors (e.g., "s.repo.UpdateBalance") require struct field
-// chain walk and return "" to fall through to package-level resolution.
+// Handles 2-part selectors (e.g., "svc.ProcessDeposit") and multi-part selectors
+// (e.g., "s.repo.UpdateBalance") by walking the struct field chain.
 // Returns "" when resolution fails.
 func (tr *TypeRegistry) ResolveMethodID(target string, imports map[string]string, _ string) string {
 	if tr == nil {
@@ -111,22 +130,98 @@ func (tr *TypeRegistry) ResolveMethodID(target string, imports map[string]string
 	}
 
 	parts := strings.Split(target, ".")
-	// Only resolve 2-part selectors (var.method). Multi-part selectors
-	// like s.repo.UpdateBalance need struct field chain walk.
-	if len(parts) != 2 {
-		return ""
-	}
-
-	methodName := parts[1]
+	methodName := parts[len(parts)-1]
 
 	// Check if first part is a tracked local variable
 	if tr.LocalVarTypes != nil {
 		if typeKey, ok := tr.LocalVarTypes[parts[0]]; ok {
-			// typeKey is "fullPkgPath:ExactTypeName"
-			return tr.resolveFromTypeKey(typeKey, methodName, imports)
+			// For 2-part selectors (var.method), resolve directly
+			if len(parts) == 2 {
+				return tr.resolveFromTypeKey(typeKey, methodName, imports)
+			}
+
+			// For multi-part selectors (var.field.sub.method), walk the struct field chain
+			// Resolve the base variable's type key ("fullPkgPath:ExactTypeName") to a struct key
+			typeKeyNormalized := tr.normalizeTypeKey(typeKey, imports)
+			currentTypeKey := typeKeyNormalized
+
+			// Walk each intermediate field (parts[1]..parts[n-2]) through the struct registry
+			for i := 1; i < len(parts)-1; i++ {
+				fieldType := tr.ResolveFieldType(currentTypeKey, parts[i])
+				if fieldType == "" {
+					return "" // Field not found in struct registry
+				}
+				// The field type might be a simple name ("WalletRepository") or
+				// a package-qualified name ("domain.WalletRepository").
+				// Build the next struct key from the current struct's package path + field type.
+				fieldType = strings.TrimPrefix(fieldType, "*")
+				if strings.Contains(fieldType, ".") {
+					// Package-qualified: resolve through imports to get canonical key
+					if resolved := tr.resolvePackageQualifiedKey(fieldType, imports); resolved != "" {
+						currentTypeKey = resolved
+					} else {
+						return ""
+					}
+				} else {
+					// Same package: use the struct's own package path
+					ci := strings.Index(currentTypeKey, ":")
+					if ci < 0 {
+						return ""
+					}
+					currentTypeKey = fmt.Sprintf("%s:%s", currentTypeKey[:ci], fieldType)
+				}
+			}
+
+			// Now currentTypeKey is the key of the terminal struct type holding the method
+			ci := strings.Index(currentTypeKey, ":")
+			if ci < 0 {
+				return ""
+			}
+			return fmt.Sprintf("method:%s:%s.%s", currentTypeKey[:ci], currentTypeKey[ci+1:], methodName)
 		}
 	}
 
+	return ""
+}
+
+// normalizeTypeKey resolves a type key into a canonical "fullPkgPath:TypeName" form,
+// expanding import aliases in the package portion if needed.
+func (tr *TypeRegistry) normalizeTypeKey(typeKey string, imports map[string]string) string {
+	idx := strings.Index(typeKey, ":")
+	if idx < 0 {
+		return typeKey
+	}
+	pkgPart := typeKey[:idx]
+	typeName := typeKey[idx+1:]
+
+	// If the package part is an import alias, resolve it to canonical path
+	if canonicalPath, ok := imports[pkgPart]; ok {
+		if tr.ModuleName != "" && strings.HasPrefix(canonicalPath, tr.ModuleName) {
+			rel := strings.TrimPrefix(canonicalPath, tr.ModuleName)
+			rel = strings.TrimPrefix(rel, "/")
+			pkgPart = rel
+		} else {
+			pkgPart = canonicalPath
+		}
+	}
+	return fmt.Sprintf("%s:%s", pkgPart, typeName)
+}
+
+// resolvePackageQualifiedKey resolves a package-qualified type name (e.g., "domain.WalletRepository")
+// to a canonical "fullPkgPath:TypeName" key using the imports map.
+func (tr *TypeRegistry) resolvePackageQualifiedKey(typeName string, imports map[string]string) string {
+	subParts := strings.SplitN(typeName, ".", 2)
+	if len(subParts) != 2 {
+		return ""
+	}
+	if pkgPath2, ok := imports[subParts[0]]; ok {
+		if tr.ModuleName != "" && strings.HasPrefix(pkgPath2, tr.ModuleName) {
+			rel := strings.TrimPrefix(pkgPath2, tr.ModuleName)
+			rel = strings.TrimPrefix(rel, "/")
+			return fmt.Sprintf("%s:%s", rel, subParts[1])
+		}
+		return fmt.Sprintf("%s:%s", pkgPath2, subParts[1])
+	}
 	return ""
 }
 

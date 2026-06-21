@@ -473,6 +473,9 @@ func (p *Parser) ExtractCalls(_ context.Context, path string) ([]*graph.Edge, er
 		return nil, err
 	}
 
+	// Reset per-file local type tracking
+	p.localVarTypes = make(map[string]string)
+
 	var edges []*graph.Edge
 	pkgPath := filepath.Dir(path)
 	imports := p.extractImports(f)
@@ -493,6 +496,27 @@ func (p *Parser) ExtractCalls(_ context.Context, path string) ([]*graph.Edge, er
 			} else {
 				currentFunc = fmt.Sprintf("func:%s:%s", pkgPath, x.Name.Name)
 			}
+
+		case *ast.GenDecl:
+			// Track variable assignments to build local type table
+			for _, spec := range x.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) == 0 || vs.Type != nil {
+					continue
+				}
+				for _, val := range vs.Values {
+					p.trackAssignmentVar(val, vs.Names[0].Name, pkgPath, imports)
+				}
+			}
+
+		case *ast.AssignStmt:
+			// Track short variable declarations like repo := repository.NewInMem()
+			if x.Tok == token.DEFINE && len(x.Lhs) == 1 && len(x.Rhs) == 1 {
+				if ident, ok := x.Lhs[0].(*ast.Ident); ok {
+					p.trackAssignmentVar(x.Rhs[0], ident.Name, pkgPath, imports)
+				}
+			}
+
 		case *ast.CallExpr:
 			if currentFunc == "" {
 				return true
@@ -518,6 +542,9 @@ func (p *Parser) ExtractControlFlow(_ context.Context, path string) ([]*graph.Ed
 	if err != nil {
 		return nil, err
 	}
+
+	// Reset per-file local type tracking
+	p.localVarTypes = make(map[string]string)
 
 	var edges []*graph.Edge
 	pkgPath := filepath.Dir(path)
@@ -562,6 +589,14 @@ func (p *Parser) walkStmtList(stmts []ast.Stmt, pkgPath, currentFunc string, ord
 
 func (p *Parser) walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, edges *[]*graph.Edge) {
 	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Track short variable declarations like repo := repository.NewInMem()
+		if s.Tok == token.DEFINE && len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+			if ident, ok := s.Lhs[0].(*ast.Ident); ok {
+				p.trackAssignmentVar(s.Rhs[0], ident.Name, pkgPath, imports)
+			}
+		}
+		p.collectCallsFromNode(s, pkgPath, currentFunc, order, ctxStack, imports, edges)
 	case *ast.BlockStmt:
 		p.walkStmtList(s.List, pkgPath, currentFunc, order, ctxStack, imports, edges)
 	case *ast.IfStmt:
@@ -710,12 +745,38 @@ func (p *Parser) selectorChainString(expr ast.Expr) string {
 	}
 }
 
+// UnwindSelector recursively unwinds a selector expression chain, returning the
+// base identifier and the ordered chain of field/method names.
+// Example: for a.b.c(), returns (ident("a"), ["b", "c"]).
+func UnwindSelector(expr *ast.SelectorExpr) (baseIdent *ast.Ident, chains []string) {
+	current := expr
+	for {
+		chains = append([]string{current.Sel.Name}, chains...)
+		if next, ok := current.X.(*ast.SelectorExpr); ok {
+			current = next
+		} else if ident, ok := current.X.(*ast.Ident); ok {
+			baseIdent = ident
+			break
+		} else {
+			break
+		}
+	}
+	return baseIdent, chains
+}
+
 // resolveCallTarget resolves a call expression to a graph node ID using
 // the local type registry for method calls on variables (Issue 1+2 fix).
 // For deeply nested selectors like s.repo.UpdateBalance, it walks the field chain
 // through the struct type registry to find the underlying method.
 func (p *Parser) resolveCallTarget(ce *ast.CallExpr, imports map[string]string, pkgPath string) string {
-	// Get the raw call target string (handles deep selectors)
+	// First, try AST-level resolution using UnwindSelector for SelectorExpr
+	if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
+		if targetID := p.resolveSelectorExpr(sel, imports, pkgPath); targetID != "" {
+			return targetID
+		}
+	}
+
+	// Fallback: Get the raw call target string and try standard resolution
 	target := p.getCallTarget(ce)
 	if target == "" {
 		return ""
@@ -726,48 +787,89 @@ func (p *Parser) resolveCallTarget(ce *ast.CallExpr, imports map[string]string, 
 		return p.resolveID(target, imports, pkgPath)
 	}
 
-	parts := strings.Split(target, ".")
-	methodName := parts[len(parts)-1]
+	return p.resolveID(target, imports, pkgPath)
+}
 
-	// Check if the first part is a local variable (receiver or local var)
-	// If so, attempt deep field chain resolution through struct registry
+// resolveSelectorExpr resolves a SelectorExpr to a graph node ID using AST-level
+// resolution with UnwindSelector for accurate base identifier extraction.
+func (p *Parser) resolveSelectorExpr(sel *ast.SelectorExpr, imports map[string]string, pkgPath string) string {
+	baseIdent, chains := UnwindSelector(sel)
+	if baseIdent == nil || len(chains) == 0 {
+		return ""
+	}
+
+	baseName := baseIdent.Name
+	methodName := chains[len(chains)-1]
+
+	// Check if this is a package-level function call (pkg.Func)
+	// by checking if baseName resolves as an import with len(chains) >= 1
+	if len(chains) == 1 {
+		// Two-part: baseName.methodName
+		// First check if it's a local variable method call
+		if p.localVarTypes != nil {
+			if typeKey, ok := p.localVarTypes[baseName]; ok {
+				typeParts := strings.SplitN(typeKey, ":", 2)
+				if len(typeParts) == 2 {
+					pkgPart := p.normalizePkgPart(typeParts[0], imports)
+					return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeParts[1], methodName)
+				}
+			}
+		}
+
+		// Check if it's a package function call
+		if path, ok := imports[baseName]; ok {
+			if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+				rel := strings.TrimPrefix(path, p.moduleName)
+				rel = strings.TrimPrefix(rel, "/")
+				return fmt.Sprintf("func:%s:%s", rel, methodName)
+			}
+			return fmt.Sprintf("func:%s:%s", path, methodName)
+		}
+
+		// Local function
+		return fmt.Sprintf("func:%s:%s", pkgPath, baseName)
+	}
+
+	// Multi-part selector (baseName.field1.field2...methodName)
+	// Walk the struct field chain through the struct registry
 	if p.localVarTypes != nil {
-		if typeKey, ok := p.localVarTypes[parts[0]]; ok {
-			// Walk the field chain (parts[1..n-1]) through struct types
+		if typeKey, ok := p.localVarTypes[baseName]; ok {
 			typeParts := strings.SplitN(typeKey, ":", 2)
 			if len(typeParts) == 2 {
-				// Expand import alias in package path part to canonical path
-				pkgPart := typeParts[0]
-				if canonicalPath, ok := imports[pkgPart]; ok {
-					if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
-						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
-						rel = strings.TrimPrefix(rel, "/")
-						pkgPart = rel
-					} else {
-						pkgPart = canonicalPath
-					}
-				}
+				pkgPart := p.normalizePkgPart(typeParts[0], imports)
 				currentType := fmt.Sprintf("%s:%s", pkgPart, typeParts[1])
-				resolved := true
-				for i := 1; i < len(parts)-1; i++ {
-					fieldType := p.resolveFieldType(currentType, parts[i], imports)
+
+				// Walk through intermediate fields (chains[0..n-2])
+				for i := 0; i < len(chains)-1; i++ {
+					fieldType := p.resolveFieldType(currentType, chains[i], imports)
 					if fieldType == "" {
-						resolved = false
-						break
+						return "" // Cannot resolve field
 					}
 					currentType = fieldType
 				}
-				if resolved {
-					if uri := p.typeKeyToMethodURI(currentType, methodName, imports); uri != "" {
-						return uri
-					}
+
+				// Now currentType is the key of the terminal type holding the method
+				if uri := p.typeKeyToMethodURI(currentType, methodName, imports); uri != "" {
+					return uri
 				}
 			}
 		}
 	}
 
-	// Fall back to standard resolution (package.func or unknown)
-	return p.resolveID(target, imports, pkgPath)
+	return ""
+}
+
+// normalizePkgPart resolves an import alias to a canonical package path.
+func (p *Parser) normalizePkgPart(pkgPart string, imports map[string]string) string {
+	if canonicalPath, ok := imports[pkgPart]; ok {
+		if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
+			rel := strings.TrimPrefix(canonicalPath, p.moduleName)
+			rel = strings.TrimPrefix(rel, "/")
+			return rel
+		}
+		return canonicalPath
+	}
+	return pkgPart
 }
 
 // typeKeyToMethodURI converts a type key and method name to a proper graph node URI.

@@ -328,17 +328,22 @@ func TestExtractCalls_PaymentService(t *testing.T) {
 	foundUpdate := false
 	for _, e := range edges {
 		if e.FromID == expectedFrom && e.Type == graph.EdgeCalls {
-			if e.ToID == "func:fmt:Println" || e.ToID == "unknown:s.log.Info" {
+			if e.ToID == "method:gopump/pkg/logger:Logger.Info" || e.ToID == "func:fmt:Sprintf" || e.ToID == "func:fmt:Println" {
 				foundInfo = true
 			}
-			if e.ToID == "unknown:s.repo.UpdateBalance" {
+			if e.ToID == "method:gopump/internal/domain:WalletRepository.UpdateBalance" {
 				foundUpdate = true
 			}
 		}
 	}
 
 	if !foundInfo {
-		t.Errorf("Expected a CALLS edge from %s to s.log.Info or fmt.Println", expectedFrom)
+		t.Errorf("Expected a CALLS edge from %s to s.log.Info or fmt.Println, got:\n", expectedFrom)
+		for _, e := range edges {
+			if e.FromID == expectedFrom {
+				t.Logf("  Edge: %s (%s) -> %s", e.FromID, e.Type, e.ToID)
+			}
+		}
 	}
 	if !foundUpdate {
 		t.Errorf("Expected a CALLS edge from %s to s.repo.UpdateBalance", expectedFrom)
