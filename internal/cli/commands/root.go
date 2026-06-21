@@ -149,7 +149,7 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 		if len(suffixCandidates) == 1 {
 			return suffixCandidates[0], nil
 		}
-if len(suffixCandidates) > 1 {
+		if len(suffixCandidates) > 1 {
 			return "", fmt.Errorf("ambiguous symbol %q, multiple matches:\n  %s",
 				input, strings.Join(suffixCandidates, "\n  "))
 		}
