@@ -44,10 +44,7 @@ func isStdlibImport(importPath, moduleName string) bool {
 	return !strings.Contains(firstSeg, ".")
 }
 
-// isInternalModulePath checks if the import path belongs to the current module.
-func isInternalModulePath(path, moduleName string) bool {
-	return moduleName != "" && strings.HasPrefix(path, moduleName)
-}
+
 
 // StructFieldInfo holds the type information for a struct field.
 type StructFieldInfo struct {
