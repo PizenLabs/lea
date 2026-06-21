@@ -285,7 +285,7 @@ func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack [
 	}
 }
 
-func collectCallsFromNode(node ast.Node, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge) {
+func collectCallsFromNode(node ast.Node, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, _ *token.FileSet, edges *[]*graph.Edge) {
 	if node == nil || currentFunc == "" {
 		return
 	}
