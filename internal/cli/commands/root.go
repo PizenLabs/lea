@@ -77,23 +77,6 @@ func normalizeSymbolInput(input string) string {
 	return s
 }
 
-// extractBaseName extracts the last meaningful name component from an input string.
-// For "func:cmd/server:main" it returns "main".
-// For "method:internal/wallet:UpdateBalance" it returns "UpdateBalance".
-// For "main" it returns "main" unchanged.
-func extractBaseName(input string) string {
-	// Find the last colon or dot separator
-	lastColon := strings.LastIndex(input, ":")
-	lastDot := strings.LastIndex(input, ".")
-	lastSep := lastColon
-	if lastDot > lastSep {
-		lastSep = lastDot
-	}
-	if lastSep >= 0 && lastSep < len(input)-1 {
-		return input[lastSep+1:]
-	}
-	return input
-}
 
 // resolveSymbolID normalizes user input for symbol lookups (Issue 4 fix).
 // It tries multiple strategies:
