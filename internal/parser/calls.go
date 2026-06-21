@@ -15,18 +15,20 @@ import (
 
 // CallParser extracts call graph edges and control flow edges from Go source files.
 type CallParser struct {
-	fset    *token.FileSet
-	reg     *TypeRegistry
-	pkgPath string
-	imports map[string]string
-	edges   []*graph.Edge
-	order   int
+	fset       *token.FileSet
+	reg        *TypeRegistry
+	pkgPath    string
+	imports    map[string]string
+	moduleName string
+	edges      []*graph.Edge
+	order      int
 }
 
 // NewCallParser creates a new call parser.
-func NewCallParser() *CallParser {
+func NewCallParser(moduleName string) *CallParser {
 	return &CallParser{
-		fset: token.NewFileSet(),
+		fset:       token.NewFileSet(),
+		moduleName: moduleName,
 	}
 }
 
@@ -182,7 +184,7 @@ func (cp *CallParser) ExtractControlFlow(_ context.Context, path string) ([]*gra
 		}
 
 		currentFunc := cp.funcID(fn, cp.pkgPath)
-		walkStmtList(fn.Body.List, cp.pkgPath, currentFunc, &cp.order, nil, cp.imports, cp.reg, cp.fset, &cp.edges)
+		walkStmtList(fn.Body.List, cp.pkgPath, currentFunc, &cp.order, nil, cp.imports, cp.reg, cp.fset, &cp.edges, cp.moduleName)
 	}
 
 	return cp.edges, nil
@@ -215,7 +217,7 @@ func (cp *CallParser) resolveCallExpr(ce *ast.CallExpr) string {
 	}
 
 	// Fallback: simple resolution without registry
-	return resolveCallTarget(target, cp.imports, cp.pkgPath)
+	return resolveCallTarget(target, cp.imports, cp.pkgPath, cp.moduleName)
 }
 
 // extractImports builds an alias -> full path map from import declarations.
@@ -407,7 +409,7 @@ func trackAssignVarFromExpr(rhs ast.Expr, varName string, reg *TypeRegistry, imp
 }
 
 // resolveCallTarget is a fallback resolution without TypeRegistry.
-func resolveCallTarget(target string, imports map[string]string, pkgPath string) string {
+func resolveCallTarget(target string, imports map[string]string, pkgPath, moduleName string) string {
 	// Handle built-in functions (no dot, no import resolution needed)
 	if !strings.Contains(target, ".") {
 		if isBuiltinFunc(target) {
@@ -417,8 +419,14 @@ func resolveCallTarget(target string, imports map[string]string, pkgPath string)
 	}
 	parts := strings.SplitN(target, ".", 2)
 	if path, ok := imports[parts[0]]; ok {
+		// Internal module package
+		if moduleName != "" && strings.HasPrefix(path, moduleName) {
+			rel := strings.TrimPrefix(path, moduleName)
+			rel = strings.TrimPrefix(rel, "/")
+			return fmt.Sprintf("func:%s:%s", rel, parts[1])
+		}
 		// Go standard library package (fmt, os, context, etc.)
-		if isStdlibImport(path) {
+		if isStdlibImport(path, moduleName) {
 			return fmt.Sprintf("stdlib:%s:%s", path, parts[1])
 		}
 		return fmt.Sprintf("func:%s:%s", path, parts[1])
@@ -427,9 +435,9 @@ func resolveCallTarget(target string, imports map[string]string, pkgPath string)
 }
 
 // walkStmtList walks a list of statements to collect control flow edges.
-func walkStmtList(stmts []ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge) {
+func walkStmtList(stmts []ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge, moduleName string) {
 	for _, stmt := range stmts {
-		walkStmt(stmt, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
+		walkStmt(stmt, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges, moduleName)
 	}
 }
 
@@ -438,7 +446,7 @@ type flowContext struct {
 	condition string
 }
 
-func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge) {
+func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, fset *token.FileSet, edges *[]*graph.Edge, moduleName string) {
 	switch s := stmt.(type) {
 	case *ast.AssignStmt:
 		// Track short variable declarations like calc := &Calculator{}
@@ -447,48 +455,48 @@ func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack [
 				trackAssignVarFromExpr(s.Rhs[0], ident.Name, reg, imports, pkgPath)
 			}
 		}
-		collectCallsFromNode(s, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
+		collectCallsFromNode(s, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges, moduleName)
 	case *ast.BlockStmt:
-		walkStmtList(s.List, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
+		walkStmtList(s.List, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges, moduleName)
 	case *ast.IfStmt:
 		ctx := append(ctxStack, flowContext{kind: "if", condition: exprString(s.Cond, fset)})
-		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		collectCallsFromNode(s.Cond, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		collectCallsFromNode(s.Cond, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		if s.Else != nil {
-			walkStmt(s.Else, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+			walkStmt(s.Else, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		}
 	case *ast.ForStmt:
 		ctx := append(ctxStack, flowContext{kind: "for", condition: exprString(s.Cond, fset)})
-		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		collectCallsFromNode(s.Cond, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		collectCallsFromNode(s.Post, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		collectCallsFromNode(s.Cond, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		collectCallsFromNode(s.Post, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 	case *ast.RangeStmt:
 		ctx := append(ctxStack, flowContext{kind: "range", condition: exprString(s.X, fset)})
-		collectCallsFromNode(s.X, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.X, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		walkStmtList(s.Body.List, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 	case *ast.SwitchStmt:
 		ctx := append(ctxStack, flowContext{kind: "switch", condition: exprString(s.Tag, fset)})
-		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		collectCallsFromNode(s.Tag, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		collectCallsFromNode(s.Tag, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		for _, stmt := range s.Body.List {
 			clause, ok := stmt.(*ast.CaseClause)
 			if !ok {
 				continue
 			}
-			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		}
 	case *ast.TypeSwitchStmt:
 		ctx := append(ctxStack, flowContext{kind: "type-switch"})
-		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
-		collectCallsFromNode(s.Assign, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Init, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
+		collectCallsFromNode(s.Assign, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		for _, stmt := range s.Body.List {
 			clause, ok := stmt.(*ast.CaseClause)
 			if !ok {
 				continue
 			}
-			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		}
 	case *ast.SelectStmt:
 		ctx := append(ctxStack, flowContext{kind: "select"})
@@ -497,20 +505,20 @@ func walkStmt(stmt ast.Stmt, pkgPath, currentFunc string, order *int, ctxStack [
 			if !ok {
 				continue
 			}
-			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+			walkStmtList(clause.Body, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 		}
 	case *ast.DeferStmt:
 		ctx := append(ctxStack, flowContext{kind: "defer"})
-		collectCallsFromNode(s.Call, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Call, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 	case *ast.GoStmt:
 		ctx := append(ctxStack, flowContext{kind: "go"})
-		collectCallsFromNode(s.Call, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges)
+		collectCallsFromNode(s.Call, pkgPath, currentFunc, order, ctx, imports, reg, fset, edges, moduleName)
 	default:
-		collectCallsFromNode(stmt, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges)
+		collectCallsFromNode(stmt, pkgPath, currentFunc, order, ctxStack, imports, reg, fset, edges, moduleName)
 	}
 }
 
-func collectCallsFromNode(node ast.Node, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, _ *token.FileSet, edges *[]*graph.Edge) {
+func collectCallsFromNode(node ast.Node, pkgPath, currentFunc string, order *int, ctxStack []flowContext, imports map[string]string, reg *TypeRegistry, _ *token.FileSet, edges *[]*graph.Edge, moduleName string) {
 	if node == nil || currentFunc == "" {
 		return
 	}
@@ -532,7 +540,7 @@ func collectCallsFromNode(node ast.Node, pkgPath, currentFunc string, order *int
 				targetID = reg.ResolveCallTarget(target, imports, pkgPath)
 			}
 		} else {
-			targetID = resolveCallTarget(target, imports, pkgPath)
+			targetID = resolveCallTarget(target, imports, pkgPath, moduleName)
 		}
 		if targetID == "" {
 			return true

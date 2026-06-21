@@ -16,10 +16,12 @@ var builtinFuncs = map[string]bool{
 }
 
 // isStdlibImport returns true if importPath belongs to Go's standard library.
-// Go stdlib packages never have a dot in the first path segment (before the first "/"),
-// while third-party packages always start with a domain containing a dot.
-func isStdlibImport(importPath string) bool {
+// Paths starting with moduleName are internal module paths, not stdlib.
+func isStdlibImport(importPath, moduleName string) bool {
 	if importPath == "" {
+		return false
+	}
+	if moduleName != "" && strings.HasPrefix(importPath, moduleName) {
 		return false
 	}
 	firstSeg := importPath
@@ -289,7 +291,7 @@ func (tr *TypeRegistry) ResolveCallTarget(target string, imports map[string]stri
 				return fmt.Sprintf("func:%s:%s", relPath, name)
 			}
 			// Go standard library package (fmt, os, context, etc.)
-			if isStdlibImport(path) {
+			if isStdlibImport(path, tr.ModuleName) {
 				return fmt.Sprintf("stdlib:%s:%s", path, name)
 			}
 			// External third-party package

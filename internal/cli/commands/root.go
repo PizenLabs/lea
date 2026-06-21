@@ -99,8 +99,7 @@ func extractBaseName(input string) string {
 // It tries multiple strategies:
 // 1. Exact match as-is
 // 2. Try with func:/method:/type: prefixes
-// 3. Fuzzy suffix/contains match against all node IDs
-// 4. Name-based fallback: extract the base name and search by symbol name
+// 3. LIKE-based fuzzy match for plain text input
 func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (string, error) {
 	// Normalize input first (strip absolute paths, runtime prefixes, module prefixes)
 	normalized := normalizeSymbolInput(input)
@@ -126,78 +125,57 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 		}
 	}
 
-	// Strategy 3: List all nodes and look for suffix/partial matches
-	allNodes, err := store.ListNodes(ctx)
+	// If the user passed a prefixed URI (contains ":"), only use exact match
+	if strings.Contains(input, ":") {
+		return "", fmt.Errorf("symbol %q not found in the graph. Use 'lea symbols' to list available symbols", input)
+	}
+
+	// Strategy 3: LIKE-based fuzzy match for plain text input
+	matches, err := store.SearchNodes(ctx, "%"+normalized+"%")
 	if err != nil {
-		return "", fmt.Errorf("error listing nodes for fuzzy match: %w", err)
+		return "", fmt.Errorf("error searching for symbol: %w", err)
 	}
-
-	// Try suffix match first: normalized input matches the end of ID
-	var candidates []string
-	for _, n := range allNodes {
-		if strings.HasSuffix(n.ID, ":"+normalized) || strings.HasSuffix(n.ID, "."+normalized) {
-			candidates = append(candidates, n.ID)
-		}
+	if len(matches) == 1 {
+		return matches[0].ID, nil
 	}
-
-	// Try name match: normalized input matches the Name field
-	if len(candidates) == 0 {
-		for _, n := range allNodes {
-			if strings.EqualFold(n.Name, normalized) || strings.Contains(strings.ToLower(n.Name), strings.ToLower(normalized)) {
-				candidates = append(candidates, n.ID)
+	if len(matches) > 1 {
+		// Try suffix-priority match: normalized matches after ":" or "."
+		var suffixCandidates []string
+		for _, n := range matches {
+			if strings.HasSuffix(n.ID, ":"+normalized) || strings.HasSuffix(n.ID, "."+normalized) {
+				suffixCandidates = append(suffixCandidates, n.ID)
 			}
 		}
-	}
-
-	// Try contains match in ID
-	if len(candidates) == 0 {
-		lowerInput := strings.ToLower(normalized)
-		for _, n := range allNodes {
-			if strings.Contains(strings.ToLower(n.ID), lowerInput) {
-				candidates = append(candidates, n.ID)
-			}
+		if len(suffixCandidates) == 1 {
+			return suffixCandidates[0], nil
 		}
-	}
-
-	if len(candidates) == 1 {
-		return candidates[0], nil
-	}
-	if len(candidates) > 1 {
+		if len(suffixCandidates) > 1 {
+			return "", fmt.Errorf("ambiguous symbol %q, multiple matches:\n  %s",
+				input, strings.Join(suffixCandidates, "\n  "))
+		}
+		var ids []string
+		for _, n := range matches {
+			ids = append(ids, n.ID)
+		}
 		return "", fmt.Errorf("ambiguous symbol %q, multiple matches:\n  %s",
-			input, strings.Join(candidates, "\n  "))
+			input, strings.Join(ids, "\n  "))
 	}
 
-	// Strategy 4: Name-based fallback — extract the base name and search by symbol Name
-	baseName := extractBaseName(normalized)
-	if baseName != "" && baseName != normalized {
-		var nameMatches []string
-		for _, n := range allNodes {
-			if strings.EqualFold(n.Name, baseName) {
-				nameMatches = append(nameMatches, n.ID)
+	// Strategy 4: Name-based fallback — search by symbol Name
+	if err == nil {
+		var byName []string
+		for _, n := range matches {
+			if strings.EqualFold(n.Name, normalized) || strings.Contains(strings.ToLower(n.Name), strings.ToLower(normalized)) {
+				byName = append(byName, n.ID)
 			}
 		}
-		if len(nameMatches) == 1 {
-			fmt.Fprintf(os.Stderr, "Did you mean %q? (auto-resolved)\n", nameMatches[0])
-			return nameMatches[0], nil
+		if len(byName) == 1 {
+			fmt.Fprintf(os.Stderr, "Did you mean %q? (auto-resolved)\n", byName[0])
+			return byName[0], nil
 		}
-		if len(nameMatches) > 1 {
+		if len(byName) > 1 {
 			return "", fmt.Errorf("symbol %q not found. Did you mean one of these?\n  %s",
-				input, strings.Join(nameMatches, "\n  "))
-		}
-	}
-
-	// Strategy 5: Last resort — find any node whose name contains the base name
-	if baseName != "" {
-		var fuzzyNames []string
-		lowerBase := strings.ToLower(baseName)
-		for _, n := range allNodes {
-			if strings.Contains(strings.ToLower(n.Name), lowerBase) {
-				fuzzyNames = append(fuzzyNames, n.ID)
-			}
-		}
-		if len(fuzzyNames) > 0 {
-			return "", fmt.Errorf("symbol %q not found. Did you mean one of these?\n  %s",
-				input, strings.Join(fuzzyNames, "\n  "))
+				input, strings.Join(byName, "\n  "))
 		}
 	}
 

@@ -12,6 +12,8 @@ type Store interface {
 	SaveEdge(ctx context.Context, edge *graph.Edge) error
 	SaveGraph(ctx context.Context, nodes []*graph.Node, edges []*graph.Edge) error
 	GetNode(ctx context.Context, id string) (*graph.Node, error)
+	// SearchNodes returns nodes whose ID matches the LIKE pattern (use % for wildcards).
+	SearchNodes(ctx context.Context, pattern string) ([]*graph.Node, error)
 	ListNodes(ctx context.Context) ([]*graph.Node, error)
 	GetNeighbors(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
 	GetInboundEdges(ctx context.Context, id string) ([]*graph.Node, []*graph.Edge, error)
