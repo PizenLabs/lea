@@ -302,7 +302,7 @@ func TestExtractCalls_PaymentService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cp := NewCallParser()
+	cp := NewCallParser("github.com/PizenLabs/lea")
 	reg := NewTypeRegistry()
 	reg.SetModuleName("github.com/PizenLabs/lea")
 	cp.SetTypeRegistry(reg)
@@ -358,7 +358,7 @@ func TestExtractControlFlow_WithTypeRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cp := NewCallParser()
+	cp := NewCallParser("github.com/PizenLabs/lea")
 	reg := NewTypeRegistry()
 	reg.SetModuleName("github.com/PizenLabs/lea")
 	cp.SetTypeRegistry(reg)
@@ -578,7 +578,7 @@ func TestResolveCallTarget_Fallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.target, func(t *testing.T) {
-			got := resolveCallTarget(tt.target, imports, tt.pkgPath)
+			got := resolveCallTarget(tt.target, imports, tt.pkgPath, "")
 			if got != tt.expected {
 				t.Errorf("resolveCallTarget(%q) = %q, want %q", tt.target, got, tt.expected)
 			}
@@ -652,7 +652,7 @@ func TestEdgesFromCallParser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cp := NewCallParser()
+	cp := NewCallParser("github.com/PizenLabs/lea")
 	reg := NewTypeRegistry()
 	reg.SetModuleName("github.com/PizenLabs/lea")
 	cp.SetTypeRegistry(reg)
@@ -679,7 +679,7 @@ func TestControlFlowEdgesFromCallParser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cp := NewCallParser()
+	cp := NewCallParser("github.com/PizenLabs/lea")
 	reg := NewTypeRegistry()
 	reg.SetModuleName("github.com/PizenLabs/lea")
 	cp.SetTypeRegistry(reg)

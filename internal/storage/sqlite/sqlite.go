@@ -282,6 +282,37 @@ func (s *Store) GetNode(ctx context.Context, id string) (*graph.Node, error) {
 	return &node, nil
 }
 
+// SearchNodes returns nodes whose ID matches the LIKE pattern.
+func (s *Store) SearchNodes(ctx context.Context, pattern string) ([]*graph.Node, error) {
+	query := `SELECT id, type, name, file, line, metadata FROM nodes WHERE id LIKE ?`
+	rows, err := s.db.QueryContext(ctx, query, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var nodes []*graph.Node
+	for rows.Next() {
+		var node graph.Node
+		var metadataStr string
+		var nodeType string
+		err := rows.Scan(&node.ID, &nodeType, &node.Name, &node.File, &node.Line, &metadataStr)
+		if err != nil {
+			return nil, err
+		}
+		node.Type = graph.NodeType(nodeType)
+		if err := unmarshalMetadata(metadataStr, &node.Metadata); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, &node)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
 // ListNodes returns all nodes in the store.
 func (s *Store) ListNodes(ctx context.Context) ([]*graph.Node, error) {
 	query := `SELECT id, type, name, file, line, metadata FROM nodes`

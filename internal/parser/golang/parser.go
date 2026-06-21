@@ -29,9 +29,12 @@ func isBuiltinFunc(name string) bool {
 }
 
 // isStdlibImport returns true if importPath belongs to Go's standard library.
-// Go stdlib packages never have a dot in the first path segment (before the first "/").
-func isStdlibImport(importPath string) bool {
+// Paths starting with moduleName are internal module paths, not stdlib.
+func isStdlibImport(importPath, moduleName string) bool {
 	if importPath == "" {
+		return false
+	}
+	if moduleName != "" && strings.HasPrefix(importPath, moduleName) {
 		return false
 	}
 	firstSeg := importPath
@@ -482,7 +485,7 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
 						rel = strings.TrimPrefix(rel, "/")
 						pkgPart = rel
-					} else if isStdlibImport(canonicalPath) {
+					} else if isStdlibImport(canonicalPath, p.moduleName) {
 						// Keep as-is for stdlib
 						pkgPart = canonicalPath
 					} else {
@@ -500,7 +503,7 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 							rel = strings.TrimPrefix(rel, "/")
 							return fmt.Sprintf("method:%s:%s.%s", rel, subParts[1], name)
 						}
-						if isStdlibImport(pkgPath2) {
+						if isStdlibImport(pkgPath2, p.moduleName) {
 							return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
 						}
 						return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
@@ -522,7 +525,7 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 			return fmt.Sprintf("func:%s:%s", relPath, name)
 		}
 		// Go standard library package (fmt, os, context, etc.)
-		if isStdlibImport(path) {
+		if isStdlibImport(path, p.moduleName) {
 			return fmt.Sprintf("stdlib:%s:%s", path, name)
 		}
 		// External third-party package
@@ -890,7 +893,7 @@ func (p *Parser) resolveSelectorExpr(sel *ast.SelectorExpr, imports map[string]s
 				rel = strings.TrimPrefix(rel, "/")
 				return fmt.Sprintf("func:%s:%s", rel, methodName)
 			}
-			if isStdlibImport(path) {
+			if isStdlibImport(path, p.moduleName) {
 				return fmt.Sprintf("stdlib:%s:%s", path, methodName)
 			}
 			return fmt.Sprintf("func:%s:%s", path, methodName)
