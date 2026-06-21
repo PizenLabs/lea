@@ -15,6 +15,37 @@ import (
 	graph "github.com/PizenLabs/lea/internal/graph/contracts"
 )
 
+// builtinFuncs is the set of Go built-in functions that should be labeled as stdlib:builtin:<name>.
+var builtinFuncs = map[string]bool{
+	"make": true, "new": true, "panic": true, "append": true,
+	"len": true, "cap": true, "delete": true, "close": true,
+	"copy": true, "print": true, "println": true, "recover": true,
+	"complex": true, "real": true, "imag": true,
+}
+
+// isBuiltinFunc returns true if name is a Go built-in function.
+func isBuiltinFunc(name string) bool {
+	return builtinFuncs[name]
+}
+
+// isStdlibImport returns true if importPath belongs to Go's standard library.
+// Go stdlib packages never have a dot in the first path segment (before the first "/").
+func isStdlibImport(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	firstSeg := importPath
+	if idx := strings.Index(importPath, "/"); idx >= 0 {
+		firstSeg = importPath[:idx]
+	}
+	return !strings.Contains(firstSeg, ".")
+}
+
+// isInternalModulePath checks if the import path belongs to the current module.
+func isInternalModulePath(path, moduleName string) bool {
+	return moduleName != "" && strings.HasPrefix(path, moduleName)
+}
+
 // StructFieldInfo holds the type information for a struct field.
 type StructFieldInfo struct {
 	FieldName string // The name of the field
@@ -32,6 +63,7 @@ type StructInfo struct {
 type Parser struct {
 	fset            *token.FileSet
 	moduleName      string
+	moduleRoot      string // Absolute path to module root for computing canonical package paths
 	structIndex     map[string]*StructInfo // key: "pkgPath:StructName"
 	localVarTypes   map[string]string      // key: varName -> "pkgPath:TypeName" (per-file scope)
 	funcReturnTypes map[string]string      // key: "pkgPath:FuncName" -> "TypeName" (constructor return types)
@@ -48,6 +80,26 @@ func NewParser() *Parser {
 // SetModuleName sets the module name for internal package resolution.
 func (p *Parser) SetModuleName(name string) {
 	p.moduleName = name
+}
+
+// SetRootPath sets the module root directory for computing canonical package paths.
+// This ensures nodes are stored with module-relative paths (e.g., "cmd/server")
+// instead of absolute filesystem paths.
+func (p *Parser) SetRootPath(root string) {
+	p.moduleRoot = root
+}
+
+// canonicalPkgPath computes the canonical package path from a file path.
+// If moduleRoot is set, returns the module-relative directory path.
+// Otherwise falls back to the filesystem directory path.
+func (p *Parser) canonicalPkgPath(filePath string) string {
+	if p.moduleRoot != "" {
+		rel, err := filepath.Rel(p.moduleRoot, filePath)
+		if err == nil {
+			return filepath.Dir(rel)
+		}
+	}
+	return filepath.Dir(filePath)
 }
 
 func (p *Parser) extractImports(f *ast.File) map[string]string {
@@ -84,7 +136,7 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 	imports := p.extractImports(f)
 
 	// Use directory as package path for now
-	pkgPath := filepath.Dir(path)
+	pkgPath := p.canonicalPkgPath(path)
 	pkgID := fmt.Sprintf("pkg:%s", pkgPath)
 
 	nodes = append(nodes, &graph.Node{
@@ -403,7 +455,11 @@ func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string
 // When a local variable type key uses an import alias as the package path,
 // the alias is resolved through the imports table to produce a canonical path.
 func (p *Parser) resolveID(target string, imports map[string]string, pkgPath string) string {
+	// Handle built-in functions (no dot, no import resolution needed)
 	if !strings.Contains(target, ".") {
+		if isBuiltinFunc(target) {
+			return fmt.Sprintf("stdlib:builtin:%s", target)
+		}
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
 	}
 
@@ -426,6 +482,9 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
 						rel = strings.TrimPrefix(rel, "/")
 						pkgPart = rel
+					} else if isStdlibImport(canonicalPath) {
+						// Keep as-is for stdlib
+						pkgPart = canonicalPath
 					} else {
 						pkgPart = canonicalPath
 					}
@@ -441,6 +500,9 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 							rel = strings.TrimPrefix(rel, "/")
 							return fmt.Sprintf("method:%s:%s.%s", rel, subParts[1], name)
 						}
+						if isStdlibImport(pkgPath2) {
+							return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
+						}
 						return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
 					}
 					return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeNamePart, name)
@@ -454,11 +516,16 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 	if path, ok := imports[prefix]; ok {
 		// It's a package call
 		if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+			// Internal module package
 			relPath := strings.TrimPrefix(path, p.moduleName)
 			relPath = strings.TrimPrefix(relPath, "/")
 			return fmt.Sprintf("func:%s:%s", relPath, name)
 		}
-		// External package
+		// Go standard library package (fmt, os, context, etc.)
+		if isStdlibImport(path) {
+			return fmt.Sprintf("stdlib:%s:%s", path, name)
+		}
+		// External third-party package
 		return fmt.Sprintf("func:%s:%s", path, name)
 	}
 
@@ -477,7 +544,7 @@ func (p *Parser) ExtractCalls(_ context.Context, path string) ([]*graph.Edge, er
 	p.localVarTypes = make(map[string]string)
 
 	var edges []*graph.Edge
-	pkgPath := filepath.Dir(path)
+	pkgPath := p.canonicalPkgPath(path)
 	imports := p.extractImports(f)
 
 	var currentFunc string
@@ -547,7 +614,7 @@ func (p *Parser) ExtractControlFlow(_ context.Context, path string) ([]*graph.Ed
 	p.localVarTypes = make(map[string]string)
 
 	var edges []*graph.Edge
-	pkgPath := filepath.Dir(path)
+	pkgPath := p.canonicalPkgPath(path)
 	imports := p.extractImports(f)
 
 	for _, decl := range f.Decls {
@@ -822,6 +889,9 @@ func (p *Parser) resolveSelectorExpr(sel *ast.SelectorExpr, imports map[string]s
 				rel := strings.TrimPrefix(path, p.moduleName)
 				rel = strings.TrimPrefix(rel, "/")
 				return fmt.Sprintf("func:%s:%s", rel, methodName)
+			}
+			if isStdlibImport(path) {
+				return fmt.Sprintf("stdlib:%s:%s", path, methodName)
 			}
 			return fmt.Sprintf("func:%s:%s", path, methodName)
 		}

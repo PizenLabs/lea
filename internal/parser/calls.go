@@ -408,11 +408,19 @@ func trackAssignVarFromExpr(rhs ast.Expr, varName string, reg *TypeRegistry, imp
 
 // resolveCallTarget is a fallback resolution without TypeRegistry.
 func resolveCallTarget(target string, imports map[string]string, pkgPath string) string {
+	// Handle built-in functions (no dot, no import resolution needed)
 	if !strings.Contains(target, ".") {
+		if isBuiltinFunc(target) {
+			return fmt.Sprintf("stdlib:builtin:%s", target)
+		}
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
 	}
 	parts := strings.SplitN(target, ".", 2)
 	if path, ok := imports[parts[0]]; ok {
+		// Go standard library package (fmt, os, context, etc.)
+		if isStdlibImport(path) {
+			return fmt.Sprintf("stdlib:%s:%s", path, parts[1])
+		}
 		return fmt.Sprintf("func:%s:%s", path, parts[1])
 	}
 	return fmt.Sprintf("unknown:%s", target)

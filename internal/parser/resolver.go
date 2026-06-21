@@ -7,6 +7,38 @@ import (
 	"strings"
 )
 
+// builtinFuncs is the set of Go built-in functions that should be labeled as stdlib:builtin:<name>.
+var builtinFuncs = map[string]bool{
+	"make": true, "new": true, "panic": true, "append": true,
+	"len": true, "cap": true, "delete": true, "close": true,
+	"copy": true, "print": true, "println": true, "recover": true,
+	"complex": true, "real": true, "imag": true,
+}
+
+// isStdlibImport returns true if importPath belongs to Go's standard library.
+// Go stdlib packages never have a dot in the first path segment (before the first "/"),
+// while third-party packages always start with a domain containing a dot.
+func isStdlibImport(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	firstSeg := importPath
+	if idx := strings.Index(importPath, "/"); idx >= 0 {
+		firstSeg = importPath[:idx]
+	}
+	return !strings.Contains(firstSeg, ".")
+}
+
+// isBuiltinFunc returns true if name is a Go built-in function.
+func isBuiltinFunc(name string) bool {
+	return builtinFuncs[name]
+}
+
+// isInternalModulePath checks if the import path belongs to the current module.
+func isInternalModulePath(path, moduleName string) bool {
+	return moduleName != "" && strings.HasPrefix(path, moduleName)
+}
+
 // StructFieldInfo holds the type information for a struct field.
 type StructFieldInfo struct {
 	FieldName string
@@ -227,8 +259,14 @@ func (tr *TypeRegistry) resolvePackageQualifiedKey(typeName string, imports map[
 
 // ResolveCallTarget resolves a full call target string to a graph node ID,
 // handling local variable method calls, package function calls, and local functions.
+// Built-in functions (make, new, panic, etc.) are labeled stdlib:builtin:<name>.
+// Go standard library functions (fmt.Println, os.Open, etc.) are labeled stdlib:<pkg>:<func>.
 func (tr *TypeRegistry) ResolveCallTarget(target string, imports map[string]string, pkgPath string) string {
+	// Handle built-in functions (no dot, no import resolution needed)
 	if !strings.Contains(target, ".") {
+		if isBuiltinFunc(target) {
+			return fmt.Sprintf("stdlib:builtin:%s", target)
+		}
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
 	}
 
@@ -242,20 +280,21 @@ func (tr *TypeRegistry) ResolveCallTarget(target string, imports map[string]stri
 	prefix := parts[0]
 	name := parts[1]
 
-	if tr != nil && tr.ModuleName != "" {
+	if tr != nil {
 		if path, ok := imports[prefix]; ok {
-			relPath := path
-			if strings.HasPrefix(path, tr.ModuleName) {
-				relPath = strings.TrimPrefix(path, tr.ModuleName)
+			// Internal module package (e.g., internal/repository, pkg/logger)
+			if isInternalModulePath(path, tr.ModuleName) {
+				relPath := strings.TrimPrefix(path, tr.ModuleName)
 				relPath = strings.TrimPrefix(relPath, "/")
+				return fmt.Sprintf("func:%s:%s", relPath, name)
 			}
-			return fmt.Sprintf("func:%s:%s", relPath, name)
+			// Go standard library package (fmt, os, context, etc.)
+			if isStdlibImport(path) {
+				return fmt.Sprintf("stdlib:%s:%s", path, name)
+			}
+			// External third-party package
+			return fmt.Sprintf("func:%s:%s", path, name)
 		}
-	}
-
-	// Fallback: try import resolution
-	if path, ok := imports[prefix]; ok {
-		return fmt.Sprintf("func:%s:%s", path, name)
 	}
 
 	return fmt.Sprintf("unknown:%s", target)
