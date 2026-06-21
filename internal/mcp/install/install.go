@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
@@ -30,25 +29,18 @@ type target struct {
 }
 
 // installTargets returns the full list of MCP configuration targets.
-func installTargets() []target {
-	home := homeDir()
-	configDir := filepath.Join(home, ".config")
-
-	vscodeBase := vscodeGlobalStorageDir(home)
-
+func installTargets(home, projectDir, vscodeUserDir string) []target {
 	return []target{
-		{Name: "Claude Code", Path: filepath.Join(home, ".claude", ".mcp.json"), Format: "json"},
-		{Name: "VS Code (Cline/Roo Code/Codex CLI)", Path: filepath.Join(vscodeBase, "saoudrizwan.claude-dev", "settings", "mcp_settings.json"), Format: "json"},
-		{Name: "OpenCode", Path: filepath.Join(configDir, "opencode", "opencode.json"), Format: "opencode"},
-		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json"},
-		{Name: "PizenLabs Shared MCP", Path: filepath.Join(configDir, "mcp", "mcp.json"), Format: "json"},
-		{Name: "Zed IDE", Path: filepath.Join(home, ".zed", "settings.json"), Format: "json"},
-		{Name: "Gemini CLI", Path: filepath.Join(configDir, "gemini-cli", "mcp.json"), Format: "json"},
-		{Name: "OpenClaw", Path: filepath.Join(configDir, "openclaw", "mcp.json"), Format: "json"},
-		{Name: "Aider", Path: filepath.Join(home, ".aider.conf.yml"), Format: "yaml"},
-		{Name: "Antigravity", Path: filepath.Join(configDir, "antigravity", "mcp_manifest.json"), Format: "json"},
-		{Name: "Kiro Agent", Path: filepath.Join(configDir, "kiro", "config.toml"), Format: "toml"},
-		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "config.json"), Format: "json"},
+		{Name: "Claude Code", Path: filepath.Join(projectDir, ".claude", ".mcp.json"), Format: "json"},
+		{Name: "Codex CLI", Path: filepath.Join(projectDir, ".codex", "config.toml"), Format: "codex_toml"},
+		{Name: "Gemini CLI", Path: filepath.Join(projectDir, ".gemini", "settings.json"), Format: "json"},
+		{Name: "Zed", Path: filepath.Join(projectDir, "settings.json"), Format: "zed"},
+		{Name: "OpenCode", Path: filepath.Join(projectDir, "opencode.json"), Format: "opencode"},
+		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json"},
+		{Name: "KiloCode", Path: filepath.Join(projectDir, "mcp_settings.json"), Format: "json"},
+		{Name: "VS Code", Path: filepath.Join(vscodeUserDir, "mcp.json"), Format: "json"},
+		{Name: "OpenClaw", Path: filepath.Join(projectDir, "openclaw.json"), Format: "json"},
+		{Name: "Kiro", Path: filepath.Join(projectDir, ".kiro", "settings", "mcp.json"), Format: "json"},
 	}
 }
 
@@ -79,8 +71,27 @@ func vscodeGlobalStorageDir(home string) string {
 	}
 }
 
+// vscodeUserDir returns the VS Code User directory for the current OS.
+func vscodeUserDir(home string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Code", "User")
+	case "linux":
+		return filepath.Join(home, ".config", "Code", "User")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		return filepath.Join(appData, "Code", "User")
+	default:
+		return filepath.Join(home, ".config", "Code", "User")
+	}
+}
+
 // Run configures all MCP targets with pizen-lea and pizen-lynx entries.
-func Run() error {
+// projectDir is the project root for resolving relative (project-scoped) config paths.
+func Run(projectDir string) error {
 	// Resolve lea binary path
 	leaPath, err := os.Executable()
 	if err != nil {
@@ -91,20 +102,18 @@ func Run() error {
 		return fmt.Errorf("cannot resolve absolute lea path: %w", err)
 	}
 
-	// Resolve lx binary path: ~/.cargo/bin/lx
 	home := homeDir()
 	lxPath := filepath.Join(home, ".cargo", "bin", "lx")
 
-	// Verify lx exists (optional, don't fail)
 	if _, err := os.Stat(lxPath); err != nil {
 		lxPath = resolveLXFallback()
 	}
 
+	vscodeUserDir := vscodeUserDir(home)
 	successCount := 0
 
-	for _, t := range installTargets() {
+	for _, t := range installTargets(home, projectDir, vscodeUserDir) {
 		if err := configureTarget(t, leaPath, lxPath); err != nil {
-			// Silently skip — log to stderr for debugging but don't fail
 			log.Printf("[skip] %s: %v", t.Name, err)
 			continue
 		}
@@ -112,8 +121,7 @@ func Run() error {
 		successCount++
 	}
 
-	// Generate system instruction file
-	if err := generateInstructions(home); err != nil {
+	if err := generateInstructions(home, projectDir); err != nil {
 		log.Printf("[skip] instructions: %v", err)
 	}
 	fmt.Printf("  ✓ System Instructions\n")
@@ -134,15 +142,8 @@ func resolveLXFallback() string {
 // configureTarget injects MCP entries into a single target configuration file.
 func configureTarget(t target, leaPath, lxPath string) error {
 	parent := filepath.Dir(t.Path)
-	if _, err := os.Stat(parent); os.IsNotExist(err) {
-		// Create parent directory for PizenLabs Shared MCP and other writable targets
-		if t.Name == "PizenLabs Shared MCP" {
-			if err := os.MkdirAll(parent, 0755); err != nil {
-				return fmt.Errorf("cannot create parent directory %q: %w", parent, err)
-			}
-		} else {
-			return fmt.Errorf("parent directory %q does not exist", parent)
-		}
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		return fmt.Errorf("cannot create parent directory %q: %w", parent, err)
 	}
 
 	switch t.Format {
@@ -150,10 +151,14 @@ func configureTarget(t target, leaPath, lxPath string) error {
 		return injectJSON(t.Path, leaPath, lxPath)
 	case "opencode":
 		return injectOpenCodeJSON(t.Path, leaPath, lxPath)
+	case "zed":
+		return injectZedJSON(t.Path, leaPath, lxPath)
 	case "yaml":
 		return injectYAML(t.Path, leaPath, lxPath)
 	case "toml":
 		return injectTOML(t.Path, leaPath, lxPath)
+	case "codex_toml":
+		return injectCodexTOML(t.Path, leaPath, lxPath)
 	default:
 		return fmt.Errorf("unsupported format: %s", t.Format)
 	}
@@ -170,11 +175,6 @@ func injectJSON(path, leaPath, lxPath string) error {
 		}
 	} else {
 		raw = make(map[string]any)
-	}
-
-	// Handle Zed IDE format (mcp at root level, not mcpServers)
-	if strings.Contains(path, ".zed") || strings.Contains(path, "zed") {
-		return injectZedJSON(raw, path, leaPath, lxPath)
 	}
 
 	// Standard mcpServers injection
@@ -196,7 +196,18 @@ func injectJSON(path, leaPath, lxPath string) error {
 }
 
 // injectZedJSON handles Zed IDE's mcp config format under root "mcp" key.
-func injectZedJSON(raw map[string]any, path, leaPath, lxPath string) error {
+func injectZedJSON(path, leaPath, lxPath string) error {
+	data := readOrEmpty(path)
+
+	var raw map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("unmarshal error: %w", err)
+		}
+	} else {
+		raw = make(map[string]any)
+	}
+
 	mcp, ok := raw["mcp"].(map[string]any)
 	if !ok || mcp == nil {
 		mcp = make(map[string]any)
@@ -207,7 +218,6 @@ func injectZedJSON(raw map[string]any, path, leaPath, lxPath string) error {
 		"HOME": os.Getenv("HOME"),
 	}
 
-	// Zed format: "pizen-lea": { "command": "...", "args": ["mcp"] }
 	mcp["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
 	mcp["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
 	raw["mcp"] = mcp
@@ -350,6 +360,36 @@ func upsertTOMLTool(list []any, name, command string, args []string) []any {
 	return list
 }
 
+// injectCodexTOML reads or creates a TOML file and injects pizen entries
+// using the Codex CLI format: [mcpServers] key with inline table values.
+func injectCodexTOML(path, leaPath, lxPath string) error {
+	data := readOrEmpty(path)
+
+	var raw map[string]any
+	if len(data) > 0 {
+		if err := toml.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("unmarshal error: %w", err)
+		}
+	} else {
+		raw = make(map[string]any)
+	}
+
+	servers, ok := raw["mcpServers"].(map[string]any)
+	if !ok || servers == nil {
+		servers = make(map[string]any)
+	}
+
+	env := map[string]string{
+		"PATH": os.Getenv("PATH"),
+		"HOME": os.Getenv("HOME"),
+	}
+	servers["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
+	servers["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
+	raw["mcpServers"] = servers
+
+	return writeTOML(path, raw)
+}
+
 // readOrEmpty reads a file, returning nil if it doesn't exist.
 func readOrEmpty(path string) []byte {
 	data, err := os.ReadFile(path)
@@ -386,13 +426,8 @@ func writeTOML(path string, v map[string]any) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// generateInstructions creates the shared instruction file at ~/.config/pizen/instructions.md.
-func generateInstructions(home string) error {
-	pizenDir := filepath.Join(home, ".config", "pizen")
-	if err := os.MkdirAll(pizenDir, 0755); err != nil {
-		return fmt.Errorf("cannot create pizen config dir: %w", err)
-	}
-
+// generateInstructions creates per-agent instruction files in the project directory.
+func generateInstructions(home, projectDir string) error {
 	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
 
 CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
@@ -401,46 +436,30 @@ first to discover the exact Symbol ID. DO NOT guess the code structure.
 Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
 flow, or neighbors) to map structural reasoning and blast radius.
 `
-	path := filepath.Join(pizenDir, "instructions.md")
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return fmt.Errorf("cannot write instructions: %w", err)
+
+	type instructionTarget struct {
+		path string
+		wrap func(string) string
 	}
 
-	// Also try to inject into .clinerules / .cursorrules in common project directories.
-	// This is best-effort; failures are silently ignored.
-	_ = injectClinerules(home)
-
-	return nil
-}
-
-// injectClinerules tries to add a reference to the instructions file in detected
-// .clinerules or .cursorrules files under common project directories.
-func injectClinerules(home string) error {
-	rulesContent := "\n# PizenLabs Ecosystem\nSee ~/.config/pizen/instructions.md for dual-tool orchestration instructions.\n"
-
-	candidates := []string{
-		filepath.Join(home, ".clinerules"),
-		filepath.Join(home, ".cursorrules"),
-		filepath.Join(home, ".codex", "rules.md"),
+	targets := []instructionTarget{
+		{path: filepath.Join(projectDir, ".codex", "AGENTS.md"), wrap: func(s string) string { return "# Codex CLI — Lea Instructions\n\n" + s + "\n" }},
+		{path: filepath.Join(projectDir, ".gemini", "GEMINI.md"), wrap: func(s string) string { return "# Gemini CLI — Lea Instructions\n\n## BeforeTool Hook\nAlways use grep before reading files.\n\n## SessionStart Reminder\n" + s + "\n" }},
+		{path: filepath.Join(projectDir, "AGENTS.md"), wrap: func(s string) string { return "# OpenCode — Lea Instructions\n\n" + s + "\n" }},
+		{path: filepath.Join(projectDir, "antigravity-cli", "AGENTS.md"), wrap: func(s string) string { return "# Antigravity — Lea Instructions\n\n## SessionStart Reminder\n" + s + "\n" }},
+		{path: filepath.Join(projectDir, "AIDER.md"), wrap: func(s string) string { return "# Aider — Lea Instructions\n\n" + s + "\n" }},
+		{path: filepath.Join(home, ".kilocode", "rules", "lea.md"), wrap: func(s string) string { return "# KiloCode — Lea Instructions\n\n" + s + "\n" }},
+		{path: filepath.Join(projectDir, ".pi", "AGENTS.md"), wrap: func(s string) string { return "# Pi — Lea Instructions\n\n## SessionStart Reminder\n" + s + "\n" }},
 	}
 
-	for _, path := range candidates {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			continue
+	for _, t := range targets {
+		dir := filepath.Dir(t.path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("cannot create directory %q: %w", dir, err)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
+		if err := os.WriteFile(t.path, []byte(t.wrap(content)), 0644); err != nil {
+			return fmt.Errorf("cannot write %q: %w", t.path, err)
 		}
-		if strings.Contains(string(data), "pizen-lynx") || strings.Contains(string(data), "pizen-lea") {
-			continue // already injected
-		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			continue
-		}
-		_, _ = f.WriteString(rulesContent)
-		_ = f.Close()
 	}
 
 	return nil
