@@ -222,9 +222,21 @@ lea symbols auth -k interface    # Filter by kind
 lea symbols -p internal          # Filter by package
 ```
 
-### 3. Start the MCP Server
+### 3. Universal MCP Install (Recommended)
 
-Connect your favorite AI agent (Claude Code, Aider, Pi, etc.) directly to your codebase:
+Register `lea` and `lynx` as MCP tools across all supported AI agents in one command:
+
+```bash
+lea mcp install
+```
+
+This auto-detects installed tools (Claude Code, VS Code Cline/Roo Code/Codex CLI, OpenCode, Pi, Zed, Gemini CLI, OpenClaw, Aider, Antigravity, Kiro, KiloCode) and injects the `pizen-lea` and `pizen-lynx` MCP entries into their config files — JSON, YAML, or TOML as appropriate.
+
+Also generates `~/.config/pizen/instructions.md` with the dual-tool orchestration protocol.
+
+### 4. Start the MCP Server
+
+Connect your favorite AI agent directly to your codebase:
 
 ```bash
 lea mcp
@@ -232,7 +244,7 @@ lea mcp
 
 Exposes MCP tools: `get_symbol_context`, `find_neighbors`, `trace_calls`, `trace_execution_path`, `find_architecture_violations`.
 
-### 4. Export agent configurations
+### 5. Export agent configurations
 
 Generate bootstrap rule pointers for AI agent ecosystems:
 
@@ -245,7 +257,7 @@ lea export copilot    # Creates .github/copilot-instructions.md
 lea export pi         # Creates .pi/AGENTS.md
 ```
 
-### 5. Interactive Exploration
+### 6. Interactive Exploration
 
 Launch the TUI for fuzzy symbol search and dependency browsing:
 
@@ -253,7 +265,7 @@ Launch the TUI for fuzzy symbol search and dependency browsing:
 lea tui
 ```
 
-### 6. Analyze impact and context
+### 7. Analyze impact and context
 
 ```bash
 # Blast radius analysis
@@ -272,7 +284,7 @@ lea flow "func:internal/cli/commands:Execute"
 lea neighbors AuthService
 ```
 
-### 7. Watch for changes
+### 8. Watch for changes
 
 Real-time incremental indexing without full re-index:
 
@@ -290,6 +302,7 @@ lea watch .
 | `symbols` | Discover and list symbols in the registry | `lea symbols auth -k interface` |
 | `tui` | Open the interactive symbol explorer (Bubble Tea) | `lea tui` |
 | `mcp` | Start the Model Context Protocol server (stdio) | `lea mcp` |
+| `mcp install` | One-command MCP setup for lea & lynx across 11 AI tools | `lea mcp install` |
 | `export` | Generate AI agent configuration bootstrap pointers | `lea export claude` |
 | `context` | Generate budget-aware context for a symbol | `lea context AuthService --budget 2000` |
 | `trace` | Follow the recursive call graph from a function | `lea trace "func:internal/cli:Execute"` |
@@ -479,6 +492,8 @@ sequenceDiagram
 - **Missing symbols?** Confirm the target language parser is supported (Go, Python, Rust, TypeScript). Non-Go languages use Tree-sitter — file a GitHub issue for unsupported languages.
 - **Architecture checks fail?** Ensure your rules file (e.g., `arch.yaml`) is present and valid YAML. Check layer patterns match your directory structure.
 - **MCP not connecting?** Verify the MCP server is running (`lea mcp`) and your AI agent is configured to connect to it via stdio.
+- **MCP install skips a tool?** That's expected — `lea mcp install` only injects entries into tools whose config directory already exists on your system, avoiding noise from uninstalled applications.
+- **Missing agent on the install list?** Run `lea mcp install` — it currently supports 11 targets (Claude Code, VS Code Cline/Roo/Codex CLI, OpenCode, Pi, Zed, Gemini CLI, OpenClaw, Aider, Antigravity, Kiro, KiloCode).
 - **TUI shows no symbols?** Ensure `lea index .` completed successfully — the TUI reads from `.lea/graph.db`.
 - **Export file missing?** Check that you ran `lea export <target>` from the repository root. The tool creates the necessary subdirectories automatically.
 
@@ -542,7 +557,7 @@ lea/
 │   │   ├── flow.go                # lea flow
 │   │   ├── impact.go              # lea impact (blast radius)
 │   │   ├── index.go               # lea index (+metadata generation)
-│   │   ├── mcp.go                 # lea mcp
+│   │   ├── mcp.go                 # lea mcp (server + install)
 │   │   ├── neighbors.go           # lea neighbors
 │   │   ├── root.go                # Root command + symbol resolution
 │   │   ├── symbols.go             # lea symbols
@@ -554,7 +569,9 @@ lea/
 │   ├── graph/contracts/           # Graph node/edge type definitions
 │   │   ├── edge.go               # 8 edge types
 │   │   └── node.go               # 7 node types
-│   ├── mcp/server.go              # MCP server (5 tools)
+│   ├── mcp/
+│   │   ├── install/install.go     # MCP install (11 target writers)
+│   │   └── server.go              # MCP server (5 tools)
 │   ├── parser/
 │   │   ├── contracts/parser.go    # Parser interface
 │   │   ├── golang/parser.go       # Go AST parser with deep resolution
