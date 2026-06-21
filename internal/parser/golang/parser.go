@@ -30,16 +30,18 @@ type StructInfo struct {
 
 // Parser parses Go source files into graph nodes and edges.
 type Parser struct {
-	fset          *token.FileSet
-	moduleName    string
-	structIndex   map[string]*StructInfo // key: "pkgPath:StructName"
-	localVarTypes map[string]string      // key: varName -> "pkgPath:TypeName" (per-file scope)
+	fset            *token.FileSet
+	moduleName      string
+	structIndex     map[string]*StructInfo // key: "pkgPath:StructName"
+	localVarTypes   map[string]string      // key: varName -> "pkgPath:TypeName" (per-file scope)
+	funcReturnTypes map[string]string      // key: "pkgPath:FuncName" -> "TypeName" (constructor return types)
 }
 
 // NewParser creates a new Go source parser.
 func NewParser() *Parser {
 	return &Parser{
-		fset: token.NewFileSet(),
+		fset:            token.NewFileSet(),
+		funcReturnTypes: make(map[string]string),
 	}
 }
 
@@ -78,6 +80,9 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 	// Reset per-file local type tracking
 	p.localVarTypes = make(map[string]string)
 
+	// Extract imports for alias resolution during var tracking
+	imports := p.extractImports(f)
+
 	// Use directory as package path for now
 	pkgPath := filepath.Dir(path)
 	pkgID := fmt.Sprintf("pkg:%s", pkgPath)
@@ -95,6 +100,9 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 			funcName := x.Name.Name
 			nodeType := graph.NodeFunction
 			id := fmt.Sprintf("func:%s:%s", pkgPath, funcName)
+
+			// Register constructor return type for call-site resolution
+			p.registerFuncReturnType(x, pkgPath)
 
 			if x.Recv != nil {
 				nodeType = graph.NodeMethod
@@ -214,7 +222,7 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 					continue
 				}
 				for _, val := range vs.Values {
-					p.trackAssignmentVar(val, vs.Names[0].Name, pkgPath)
+					p.trackAssignmentVar(val, vs.Names[0].Name, pkgPath, imports)
 				}
 			}
 
@@ -222,7 +230,7 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 			// Track short variable declarations like calc := &Calculator{}
 			if x.Tok == token.DEFINE && len(x.Lhs) == 1 && len(x.Rhs) == 1 {
 				if ident, ok := x.Lhs[0].(*ast.Ident); ok {
-					p.trackAssignmentVar(x.Rhs[0], ident.Name, pkgPath)
+					p.trackAssignmentVar(x.Rhs[0], ident.Name, pkgPath, imports)
 				}
 			}
 		}
@@ -269,9 +277,40 @@ func (p *Parser) exprTypeName(expr ast.Expr) string {
 	}
 }
 
+// registerFuncReturnType captures the return type of a function (typically a constructor)
+// so that call-site resolution can use the exact concrete type name instead of inferring it
+// from the function name (e.g., NewPayment returning *PaymentService rather than "Payment").
+func (p *Parser) registerFuncReturnType(fn *ast.FuncDecl, pkgPath string) {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return
+	}
+	results := fn.Type.Results.List
+	if len(results) != 1 {
+		return
+	}
+	// Unwrap pointer indirection to get the base type name
+	typ := results[0].Type
+	for {
+		star, ok := typ.(*ast.StarExpr)
+		if !ok {
+			break
+		}
+		typ = star.X
+	}
+	if ident, ok := typ.(*ast.Ident); ok {
+		if p.funcReturnTypes == nil {
+			p.funcReturnTypes = make(map[string]string)
+		}
+		key := fmt.Sprintf("%s:%s", pkgPath, fn.Name.Name)
+		p.funcReturnTypes[key] = ident.Name
+	}
+}
+
 // trackAssignmentVar records the inferred type of a variable from its right-hand side expression.
 // This builds the local type scope table for resolving method calls on variables (Issue 1 fix).
-func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string) {
+// When imports are available, import aliases are expanded to canonical package paths,
+// and registered constructor return types are used instead of name-based inference.
+func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string, imports map[string]string) {
 	if p.localVarTypes == nil {
 		p.localVarTypes = make(map[string]string)
 	}
@@ -283,14 +322,46 @@ func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string
 			// NewConstructor() - infer type from function name (strip "New" prefix)
 			typeName := strings.TrimPrefix(fun.Name, "New")
 			if typeName != "" && typeName != fun.Name {
+				// Look up registered return type for precise type name
+				funcKey := fmt.Sprintf("%s:%s", pkgPath, fun.Name)
+				if registeredType, ok := p.funcReturnTypes[funcKey]; ok {
+					typeName = registeredType
+				}
 				p.localVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, typeName)
 			}
 		case *ast.SelectorExpr:
-			// package.NewConstructor() - use the last component
-			typeName := strings.TrimPrefix(fun.Sel.Name, "New")
-			if typeName != "" && typeName != fun.Sel.Name {
-				if id, ok := fun.X.(*ast.Ident); ok {
-					p.localVarTypes[varName] = fmt.Sprintf("%s:%s", id.Name, typeName)
+			// package.NewConstructor() - resolve alias, use registered return type
+			if id, ok := fun.X.(*ast.Ident); ok {
+				pkgAlias := id.Name
+				constructorName := fun.Sel.Name
+
+				// First try to look up registered return type before falling back to name inference
+				typeName := ""
+
+				// Resolve package alias to canonical path for func key lookup
+				canonPkg := pkgAlias
+				if path, ok := imports[pkgAlias]; ok {
+					if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+						canonPkg = strings.TrimPrefix(path, p.moduleName)
+						canonPkg = strings.TrimPrefix(canonPkg, "/")
+					} else {
+						canonPkg = path
+					}
+				}
+
+				// Look up registered return type for precise type name
+				funcKey := fmt.Sprintf("%s:%s", canonPkg, constructorName)
+				if registeredType, ok := p.funcReturnTypes[funcKey]; ok {
+					typeName = registeredType
+				}
+
+				// Fall back to name-based inference if no registered type
+				if typeName == "" {
+					typeName = strings.TrimPrefix(constructorName, "New")
+				}
+
+				if typeName != "" && typeName != constructorName {
+					p.localVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, typeName)
 				}
 			}
 		}
@@ -303,7 +374,17 @@ func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string
 				}
 				if t, ok := comp.Type.(*ast.SelectorExpr); ok {
 					if id, ok := t.X.(*ast.Ident); ok {
-						p.localVarTypes[varName] = fmt.Sprintf("%s:%s", id.Name, t.Sel.Name)
+						pkgAlias := id.Name
+						canonPkg := pkgAlias
+						if path, ok := imports[pkgAlias]; ok {
+							if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+								canonPkg = strings.TrimPrefix(path, p.moduleName)
+								canonPkg = strings.TrimPrefix(canonPkg, "/")
+							} else {
+								canonPkg = path
+							}
+						}
+						p.localVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, t.Sel.Name)
 					}
 				}
 			}
@@ -319,6 +400,8 @@ func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string
 // resolveID resolves a call target string to a graph node ID.
 // Attempts local variable type resolution first (Issue 1 fix), then falls back to
 // package import resolution, and finally resorts to "unknown:" prefix.
+// When a local variable type key uses an import alias as the package path,
+// the alias is resolved through the imports table to produce a canonical path.
 func (p *Parser) resolveID(target string, imports map[string]string, pkgPath string) string {
 	if !strings.Contains(target, ".") {
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
@@ -334,9 +417,23 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 			// prefix is a variable name, name is the method
 			typeParts := strings.SplitN(typeKey, ":", 2)
 			if len(typeParts) == 2 {
-				// Check if typeParts[1] has a package prefix (e.g., "domain.WalletRepository")
-				if strings.Contains(typeParts[1], ".") {
-					subParts := strings.SplitN(typeParts[1], ".", 2)
+				pkgPart := typeParts[0]
+				typeNamePart := typeParts[1]
+
+				// If the package part is an import alias, resolve it to canonical path
+				if canonicalPath, ok := imports[pkgPart]; ok {
+					if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
+						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
+						rel = strings.TrimPrefix(rel, "/")
+						pkgPart = rel
+					} else {
+						pkgPart = canonicalPath
+					}
+				}
+
+				// Check if typeNamePart has a package prefix (e.g., "domain.WalletRepository")
+				if strings.Contains(typeNamePart, ".") {
+					subParts := strings.SplitN(typeNamePart, ".", 2)
 					// Try resolving through imports
 					if pkgPath2, ok := imports[subParts[0]]; ok {
 						if p.moduleName != "" && strings.HasPrefix(pkgPath2, p.moduleName) {
@@ -346,9 +443,9 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 						}
 						return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
 					}
-					return fmt.Sprintf("method:%s:%s.%s", typeParts[0], typeParts[1], name)
+					return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeNamePart, name)
 				}
-				return fmt.Sprintf("method:%s:%s.%s", typeParts[0], typeParts[1], name)
+				return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeNamePart, name)
 			}
 			return fmt.Sprintf("unknown:%s.%s", prefix, name)
 		}
@@ -639,7 +736,18 @@ func (p *Parser) resolveCallTarget(ce *ast.CallExpr, imports map[string]string, 
 			// Walk the field chain (parts[1..n-1]) through struct types
 			typeParts := strings.SplitN(typeKey, ":", 2)
 			if len(typeParts) == 2 {
-				currentType := fmt.Sprintf("%s:%s", typeParts[0], typeParts[1])
+				// Expand import alias in package path part to canonical path
+				pkgPart := typeParts[0]
+				if canonicalPath, ok := imports[pkgPart]; ok {
+					if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
+						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
+						rel = strings.TrimPrefix(rel, "/")
+						pkgPart = rel
+					} else {
+						pkgPart = canonicalPath
+					}
+				}
+				currentType := fmt.Sprintf("%s:%s", pkgPart, typeParts[1])
 				resolved := true
 				for i := 1; i < len(parts)-1; i++ {
 					fieldType := p.resolveFieldType(currentType, parts[i], imports)
