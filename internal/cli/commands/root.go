@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/PizenLabs/lea/internal/storage/contracts"
@@ -76,11 +77,30 @@ func normalizeSymbolInput(input string) string {
 	return s
 }
 
+// extractBaseName extracts the last meaningful name component from an input string.
+// For "func:cmd/server:main" it returns "main".
+// For "method:internal/wallet:UpdateBalance" it returns "UpdateBalance".
+// For "main" it returns "main" unchanged.
+func extractBaseName(input string) string {
+	// Find the last colon or dot separator
+	lastColon := strings.LastIndex(input, ":")
+	lastDot := strings.LastIndex(input, ".")
+	lastSep := lastColon
+	if lastDot > lastSep {
+		lastSep = lastDot
+	}
+	if lastSep >= 0 && lastSep < len(input)-1 {
+		return input[lastSep+1:]
+	}
+	return input
+}
+
 // resolveSymbolID normalizes user input for symbol lookups (Issue 4 fix).
 // It tries multiple strategies:
 // 1. Exact match as-is
 // 2. Try with func:/method:/type: prefixes
 // 3. Fuzzy suffix/contains match against all node IDs
+// 4. Name-based fallback: extract the base name and search by symbol name
 func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (string, error) {
 	// Normalize input first (strip absolute paths, runtime prefixes, module prefixes)
 	normalized := normalizeSymbolInput(input)
@@ -147,8 +167,44 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 			input, strings.Join(candidates, "\n  "))
 	}
 
-	return "", fmt.Errorf("symbol %q not found in the graph", input)
+	// Strategy 4: Name-based fallback — extract the base name and search by symbol Name
+	baseName := extractBaseName(normalized)
+	if baseName != "" && baseName != normalized {
+		var nameMatches []string
+		for _, n := range allNodes {
+			if strings.EqualFold(n.Name, baseName) {
+				nameMatches = append(nameMatches, n.ID)
+			}
+		}
+		if len(nameMatches) == 1 {
+			fmt.Fprintf(os.Stderr, "Did you mean %q? (auto-resolved)\n", nameMatches[0])
+			return nameMatches[0], nil
+		}
+		if len(nameMatches) > 1 {
+			return "", fmt.Errorf("symbol %q not found. Did you mean one of these?\n  %s",
+				input, strings.Join(nameMatches, "\n  "))
+		}
+	}
+
+	// Strategy 5: Last resort — find any node whose name contains the base name
+	if baseName != "" {
+		var fuzzyNames []string
+		lowerBase := strings.ToLower(baseName)
+		for _, n := range allNodes {
+			if strings.Contains(strings.ToLower(n.Name), lowerBase) {
+				fuzzyNames = append(fuzzyNames, n.ID)
+			}
+		}
+		if len(fuzzyNames) > 0 {
+			return "", fmt.Errorf("symbol %q not found. Did you mean one of these?\n  %s",
+				input, strings.Join(fuzzyNames, "\n  "))
+		}
+	}
+
+	return "", fmt.Errorf("symbol %q not found in the graph. Use 'lea symbols' to list available symbols", input)
 }
+
+
 
 // openStore opens the .lea/graph.db store from the current or specified root.
 func openStore(root string) (contracts.Store, error) {
