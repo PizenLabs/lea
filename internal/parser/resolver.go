@@ -102,7 +102,7 @@ func (tr *TypeRegistry) RegisterStruct(pkgPath, typeName string, fields []Struct
 // Multi-part selectors (e.g., "s.repo.UpdateBalance") require struct field
 // chain walk and return "" to fall through to package-level resolution.
 // Returns "" when resolution fails.
-func (tr *TypeRegistry) ResolveMethodID(target string, imports map[string]string, pkgPath string) string {
+func (tr *TypeRegistry) ResolveMethodID(target string, imports map[string]string, _ string) string {
 	if tr == nil {
 		return ""
 	}
