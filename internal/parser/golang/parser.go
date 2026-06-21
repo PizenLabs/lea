@@ -63,7 +63,7 @@ type StructInfo struct {
 type Parser struct {
 	fset            *token.FileSet
 	moduleName      string
-	moduleRoot      string // Absolute path to module root for computing canonical package paths
+	moduleRoot      string                 // Absolute path to module root for computing canonical package paths
 	structIndex     map[string]*StructInfo // key: "pkgPath:StructName"
 	localVarTypes   map[string]string      // key: varName -> "pkgPath:TypeName" (per-file scope)
 	funcReturnTypes map[string]string      // key: "pkgPath:FuncName" -> "TypeName" (constructor return types)
