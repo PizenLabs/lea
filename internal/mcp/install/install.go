@@ -18,8 +18,9 @@ import (
 
 // MCPEntry represents a single MCP tool entry in the JSON config schema.
 type MCPEntry struct {
-	Command string   `json:"command" yaml:"cmd" toml:"command"`
-	Args    []string `json:"args" yaml:"-" toml:"args"`
+	Command string            `json:"command" yaml:"cmd" toml:"command"`
+	Args    []string          `json:"args" yaml:"-" toml:"args"`
+	Env     map[string]string `json:"env,omitempty" yaml:"-" toml:"-"`
 }
 
 type target struct {
@@ -33,15 +34,14 @@ func installTargets() []target {
 	home := homeDir()
 	configDir := filepath.Join(home, ".config")
 
-	// VS Code / OpenCode base path is platform-dependent
 	vscodeBase := vscodeGlobalStorageDir(home)
-	opencodeBase := opencodeGlobalStorageDir(home)
 
 	return []target{
 		{Name: "Claude Code", Path: filepath.Join(home, ".claude", ".mcp.json"), Format: "json"},
 		{Name: "VS Code (Cline/Roo Code/Codex CLI)", Path: filepath.Join(vscodeBase, "saoudrizwan.claude-dev", "settings", "mcp_settings.json"), Format: "json"},
-		{Name: "OpenCode", Path: filepath.Join(opencodeBase, "saoudrizwan.claude-dev", "settings", "mcp_settings.json"), Format: "json"},
-		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp_config.json"), Format: "json"},
+		{Name: "OpenCode", Path: filepath.Join(configDir, "opencode", "opencode.json"), Format: "opencode"},
+		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json"},
+		{Name: "PizenLabs Shared MCP", Path: filepath.Join(configDir, "mcp", "mcp.json"), Format: "json"},
 		{Name: "Zed IDE", Path: filepath.Join(home, ".zed", "settings.json"), Format: "json"},
 		{Name: "Gemini CLI", Path: filepath.Join(configDir, "gemini-cli", "mcp.json"), Format: "json"},
 		{Name: "OpenClaw", Path: filepath.Join(configDir, "openclaw", "mcp.json"), Format: "json"},
@@ -76,25 +76,6 @@ func vscodeGlobalStorageDir(home string) string {
 		return filepath.Join(appData, "Code", "User", "globalStorage")
 	default:
 		return filepath.Join(home, ".config", "Code", "User", "globalStorage")
-	}
-}
-
-// opencodeGlobalStorageDir returns the OpenCode globalStorage path for the current OS.
-func opencodeGlobalStorageDir(home string) string {
-	// OpenCode uses the same directory structure as VS Code under its own config root.
-	switch runtime.GOOS {
-	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "OpenCode", "User", "globalStorage")
-	case "linux":
-		return filepath.Join(home, ".config", "OpenCode", "User", "globalStorage")
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			appData = filepath.Join(home, "AppData", "Roaming")
-		}
-		return filepath.Join(appData, "OpenCode", "User", "globalStorage")
-	default:
-		return filepath.Join(home, ".config", "OpenCode", "User", "globalStorage")
 	}
 }
 
@@ -154,12 +135,21 @@ func resolveLXFallback() string {
 func configureTarget(t target, leaPath, lxPath string) error {
 	parent := filepath.Dir(t.Path)
 	if _, err := os.Stat(parent); os.IsNotExist(err) {
-		return fmt.Errorf("parent directory %q does not exist", parent)
+		// Create parent directory for PizenLabs Shared MCP and other writable targets
+		if t.Name == "PizenLabs Shared MCP" {
+			if err := os.MkdirAll(parent, 0755); err != nil {
+				return fmt.Errorf("cannot create parent directory %q: %w", parent, err)
+			}
+		} else {
+			return fmt.Errorf("parent directory %q does not exist", parent)
+		}
 	}
 
 	switch t.Format {
 	case "json":
 		return injectJSON(t.Path, leaPath, lxPath)
+	case "opencode":
+		return injectOpenCodeJSON(t.Path, leaPath, lxPath)
 	case "yaml":
 		return injectYAML(t.Path, leaPath, lxPath)
 	case "toml":
@@ -192,8 +182,14 @@ func injectJSON(path, leaPath, lxPath string) error {
 	if !ok || servers == nil {
 		servers = make(map[string]any)
 	}
-	servers["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}}
-	servers["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}}
+	env := map[string]string{
+		"PATH": os.Getenv("PATH"),
+		"HOME": os.Getenv("HOME"),
+	}
+	leaEntry := MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
+	lxEntry := MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
+	servers["pizen-lea"] = leaEntry
+	servers["pizen-lynx"] = lxEntry
 	raw["mcpServers"] = servers
 
 	return writeJSON(path, raw)
@@ -206,9 +202,48 @@ func injectZedJSON(raw map[string]any, path, leaPath, lxPath string) error {
 		mcp = make(map[string]any)
 	}
 
+	env := map[string]string{
+		"PATH": os.Getenv("PATH"),
+		"HOME": os.Getenv("HOME"),
+	}
+
 	// Zed format: "pizen-lea": { "command": "...", "args": ["mcp"] }
-	mcp["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}}
-	mcp["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}}
+	mcp["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
+	mcp["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
+	raw["mcp"] = mcp
+
+	return writeJSON(path, raw)
+}
+
+// injectOpenCodeJSON handles OpenCode's MCP config format under root "mcp" key.
+// OpenCode uses: { "enabled": true, "type": "local", "command": ["path", "mcp"] }
+func injectOpenCodeJSON(path, leaPath, lxPath string) error {
+	data := readOrEmpty(path)
+
+	var raw map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("unmarshal error: %w", err)
+		}
+	} else {
+		raw = make(map[string]any)
+	}
+
+	mcp, ok := raw["mcp"].(map[string]any)
+	if !ok || mcp == nil {
+		mcp = make(map[string]any)
+	}
+
+	mcp["pizen-lea"] = map[string]any{
+		"enabled": true,
+		"type":    "local",
+		"command": []any{leaPath, "mcp"},
+	}
+	mcp["pizen-lynx"] = map[string]any{
+		"enabled": true,
+		"type":    "local",
+		"command": []any{lxPath, "mcp"},
+	}
 	raw["mcp"] = mcp
 
 	return writeJSON(path, raw)

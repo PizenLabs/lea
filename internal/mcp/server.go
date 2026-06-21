@@ -77,12 +77,18 @@ func (s *Server) Start() error {
 		mcp_golang.WithName("lea"),
 	)
 
-	// Register all tools.
 	if err := s.registerTools(server); err != nil {
 		return err
 	}
 
-	return server.Serve()
+	if err := server.Serve(); err != nil {
+		return err
+	}
+
+	// mcp-golang v0.16.1 Serve() is non-blocking — the read-loop goroutine
+	// has already started.  Block forever so the process stays alive until
+	// opencode kills the subprocess.
+	select {}
 }
 
 // registerTools registers every MCP tool exposed by lea.
