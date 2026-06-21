@@ -11,9 +11,16 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
+
+// Options controls automated behavior of the install command.
+type Options struct {
+	AutoSelectAll bool
+}
 
 // MCPEntry represents a single MCP tool entry in the JSON config schema.
 type MCPEntry struct {
@@ -23,24 +30,28 @@ type MCPEntry struct {
 }
 
 type target struct {
-	Name   string
-	Path   string // after tilde expansion
-	Format string // json, yaml, toml
+	Name      string
+	Path      string
+	Format    string
+	ConfigDir string
 }
 
-// installTargets returns the full list of MCP configuration targets.
-func installTargets(home, projectDir, vscodeUserDir string) []target {
+// installTargets returns the full list of MCP configuration targets using
+// global/home configuration directories. No project-scoped directories are used.
+func installTargets(home, vscodeUserDir string) []target {
+	zedDir := zedConfigDir(home)
 	return []target{
-		{Name: "Claude Code", Path: filepath.Join(projectDir, ".claude", ".mcp.json"), Format: "json"},
-		{Name: "Codex CLI", Path: filepath.Join(projectDir, ".codex", "config.toml"), Format: "codex_toml"},
-		{Name: "Gemini CLI", Path: filepath.Join(projectDir, ".gemini", "settings.json"), Format: "json"},
-		{Name: "Zed", Path: filepath.Join(projectDir, "settings.json"), Format: "zed"},
-		{Name: "OpenCode", Path: filepath.Join(projectDir, "opencode.json"), Format: "opencode"},
-		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json"},
-		{Name: "KiloCode", Path: filepath.Join(projectDir, "mcp_settings.json"), Format: "json"},
-		{Name: "VS Code", Path: filepath.Join(vscodeUserDir, "mcp.json"), Format: "json"},
-		{Name: "OpenClaw", Path: filepath.Join(projectDir, "openclaw.json"), Format: "json"},
-		{Name: "Kiro", Path: filepath.Join(projectDir, ".kiro", "settings", "mcp.json"), Format: "json"},
+		{Name: "Claude Code", Path: filepath.Join(home, ".claude", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".claude")},
+		{Name: "Codex CLI", Path: filepath.Join(home, ".codex", "config.toml"), Format: "codex_toml", ConfigDir: filepath.Join(home, ".codex")},
+		{Name: "Gemini CLI", Path: filepath.Join(home, ".gemini", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini")},
+		{Name: "Zed", Path: filepath.Join(zedDir, "settings.json"), Format: "zed", ConfigDir: zedDir},
+		{Name: "OpenCode", Path: filepath.Join(home, ".opencode", "settings.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".opencode")},
+		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini", "config")},
+		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".kilocode")},
+		{Name: "VS Code", Path: filepath.Join(vscodeUserDir, "globalStorage", "mcp.json"), Format: "json", ConfigDir: filepath.Join(vscodeUserDir, "globalStorage")},
+		{Name: "OpenClaw", Path: filepath.Join(home, ".openclaw", "config.json"), Format: "json", ConfigDir: filepath.Join(home, ".openclaw")},
+		{Name: "Kiro", Path: filepath.Join(home, ".kiro", "settings", "mcp.json"), Format: "json", ConfigDir: filepath.Join(home, ".kiro", "settings")},
+		{Name: "System Instructions", Path: filepath.Join(home, ".config", "pizen", "instructions.md"), Format: "instructions", ConfigDir: filepath.Join(home, ".config", "pizen")},
 	}
 }
 
@@ -53,21 +64,21 @@ func homeDir() string {
 	return h
 }
 
-// vscodeGlobalStorageDir returns the VS Code globalStorage path for the current OS.
-func vscodeGlobalStorageDir(home string) string {
+// zedConfigDir returns the Zed configuration directory for the current OS.
+func zedConfigDir(home string) string {
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage")
+		return filepath.Join(home, "Library", "Application Support", "Zed")
 	case "linux":
-		return filepath.Join(home, ".config", "Code", "User", "globalStorage")
+		return filepath.Join(home, ".config", "zed")
 	case "windows":
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
 			appData = filepath.Join(home, "AppData", "Roaming")
 		}
-		return filepath.Join(appData, "Code", "User", "globalStorage")
+		return filepath.Join(appData, "Zed", "User")
 	default:
-		return filepath.Join(home, ".config", "Code", "User", "globalStorage")
+		return filepath.Join(home, ".config", "zed")
 	}
 }
 
@@ -89,10 +100,15 @@ func vscodeUserDir(home string) string {
 	}
 }
 
-// Run configures all MCP targets with pizen-lea and pizen-lynx entries.
-// projectDir is the project root for resolving relative (project-scoped) config paths.
-func Run(projectDir string) error {
-	// Resolve lea binary path
+// Run configures MCP targets for detected AI coding agents.
+// If opts includes AutoSelectAll=true, all detected targets are configured
+// without user interaction. Otherwise an interactive multi-select prompt is shown.
+func Run(opts ...Options) error {
+	option := Options{}
+	if len(opts) > 0 {
+		option = opts[0]
+	}
+
 	leaPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot resolve lea binary path: %w", err)
@@ -110,9 +126,34 @@ func Run(projectDir string) error {
 	}
 
 	vscodeUserDir := vscodeUserDir(home)
-	successCount := 0
+	allTargets := installTargets(home, vscodeUserDir)
+	detected := detectTargets(allTargets)
 
-	for _, t := range installTargets(home, projectDir, vscodeUserDir) {
+	if len(detected) == 0 {
+		fmt.Println("No existing AI agent config directories found; nothing to configure.")
+		return nil
+	}
+
+	fmt.Printf("Detected %d existing AI agent config directories.\n\n", len(detected))
+
+	var selected []target
+	if option.AutoSelectAll {
+		selected = detected
+		fmt.Println("Configuring all detected targets (--yes/--all).")
+	} else {
+		selected, err = selectTargets(detected)
+		if err != nil {
+			return fmt.Errorf("target selection failed: %w", err)
+		}
+	}
+
+	if len(selected) == 0 {
+		fmt.Println("No MCP targets selected.")
+		return nil
+	}
+
+	successCount := 0
+	for _, t := range selected {
 		if err := configureTarget(t, leaPath, lxPath); err != nil {
 			log.Printf("[skip] %s: %v", t.Name, err)
 			continue
@@ -121,13 +162,171 @@ func Run(projectDir string) error {
 		successCount++
 	}
 
-	if err := generateInstructions(home, projectDir); err != nil {
-		log.Printf("[skip] instructions: %v", err)
-	}
-	fmt.Printf("  ✓ System Instructions\n")
-
 	fmt.Printf("\nConfigured %d MCP targets successfully.\n", successCount)
 	return nil
+}
+
+// detectTargets returns only targets whose global configuration directory exists.
+func detectTargets(targets []target) []target {
+	detected := make([]target, 0, len(targets))
+	for _, t := range targets {
+		info, err := os.Stat(t.ConfigDir)
+		if err == nil && info.IsDir() {
+			detected = append(detected, t)
+		}
+	}
+	return detected
+}
+
+// validateConfigDir returns an error if the given path does not exist or is not a directory.
+func validateConfigDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config directory %q does not exist", path)
+		}
+		return fmt.Errorf("cannot stat config directory %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path %q is not a directory", path)
+	}
+	return nil
+}
+
+// selectionItem implements list.Item for the interactive multi-select prompt.
+type selectionItem struct {
+	target   target
+	selected bool
+}
+
+func (i selectionItem) Title() string {
+	state := "[ ]"
+	if i.selected {
+		state = "[x]"
+	}
+	return fmt.Sprintf("%s %s", state, i.target.Name)
+}
+
+func (i selectionItem) Description() string {
+	return i.target.Path
+}
+
+func (i selectionItem) FilterValue() string {
+	return i.target.Name
+}
+
+type selectionModel struct {
+	list list.Model
+}
+
+func newSelectionModel(targets []target) selectionModel {
+	items := make([]list.Item, len(targets))
+	for i, t := range targets {
+		items[i] = selectionItem{target: t}
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = ""
+	l.SetFilteringEnabled(false)
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
+	return selectionModel{list: l}
+}
+
+func (m selectionModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m selectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			return m, tea.Quit
+		case "enter":
+			return m, tea.Quit
+		case " ", "x":
+			m.toggle()
+			return m, nil
+		case "a":
+			m.selectAll()
+			return m, nil
+		case "i":
+			m.clearAll()
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
+}
+
+func (m *selectionModel) toggle() {
+	items := m.list.Items()
+	if len(items) == 0 {
+		return
+	}
+	idx := m.list.GlobalIndex()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	item, ok := items[idx].(selectionItem)
+	if !ok {
+		return
+	}
+	item.selected = !item.selected
+	m.list.SetItem(idx, item)
+}
+
+func (m *selectionModel) selectAll() {
+	for i, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok {
+			continue
+		}
+		it.selected = true
+		m.list.SetItem(i, it)
+	}
+}
+
+func (m *selectionModel) clearAll() {
+	for i, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok {
+			continue
+		}
+		it.selected = false
+		m.list.SetItem(i, it)
+	}
+}
+
+func (m selectionModel) selectedTargets() []target {
+	var selected []target
+	for _, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok || !it.selected {
+			continue
+		}
+		selected = append(selected, it.target)
+	}
+	return selected
+}
+
+func (m selectionModel) View() string {
+	return fmt.Sprintf("Select targets to configure:\n%s\n\n  space/x toggle · a select all · i clear all · enter confirm · ctrl+c cancel", m.list.View())
+}
+
+// selectTargets presents an interactive multi-selection prompt and returns chosen targets.
+func selectTargets(targets []target) ([]target, error) {
+	p := tea.NewProgram(newSelectionModel(targets), tea.WithAltScreen())
+	final, err := p.Run()
+	if err != nil {
+		return nil, err
+	}
+	model, ok := final.(selectionModel)
+	if !ok {
+		return nil, fmt.Errorf("unexpected prompt result type")
+	}
+	return model.selectedTargets(), nil
 }
 
 // resolveLXFallback tries to find lx via PATH as a fallback.
@@ -141,9 +340,8 @@ func resolveLXFallback() string {
 
 // configureTarget injects MCP entries into a single target configuration file.
 func configureTarget(t target, leaPath, lxPath string) error {
-	parent := filepath.Dir(t.Path)
-	if err := os.MkdirAll(parent, 0755); err != nil {
-		return fmt.Errorf("cannot create parent directory %q: %w", parent, err)
+	if err := validateConfigDir(t.ConfigDir); err != nil {
+		return err
 	}
 
 	switch t.Format {
@@ -159,6 +357,8 @@ func configureTarget(t target, leaPath, lxPath string) error {
 		return injectTOML(t.Path, leaPath, lxPath)
 	case "codex_toml":
 		return injectCodexTOML(t.Path, leaPath, lxPath)
+	case "instructions":
+		return writeInstructions(t.Path)
 	default:
 		return fmt.Errorf("unsupported format: %s", t.Format)
 	}
@@ -426,8 +626,8 @@ func writeTOML(path string, v map[string]any) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// generateInstructions creates per-agent instruction files in the project directory.
-func generateInstructions(home, projectDir string) error {
+// writeInstructions writes the global Pizen ecosystem instructions file.
+func writeInstructions(path string) error {
 	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
 
 CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
@@ -436,31 +636,5 @@ first to discover the exact Symbol ID. DO NOT guess the code structure.
 Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
 flow, or neighbors) to map structural reasoning and blast radius.
 `
-
-	type instructionTarget struct {
-		path string
-		wrap func(string) string
-	}
-
-	targets := []instructionTarget{
-		{path: filepath.Join(projectDir, ".codex", "AGENTS.md"), wrap: func(s string) string { return "# Codex CLI — Lea Instructions\n\n" + s + "\n" }},
-		{path: filepath.Join(projectDir, ".gemini", "GEMINI.md"), wrap: func(s string) string { return "# Gemini CLI — Lea Instructions\n\n## BeforeTool Hook\nAlways use grep before reading files.\n\n## SessionStart Reminder\n" + s + "\n" }},
-		{path: filepath.Join(projectDir, "AGENTS.md"), wrap: func(s string) string { return "# OpenCode — Lea Instructions\n\n" + s + "\n" }},
-		{path: filepath.Join(projectDir, "antigravity-cli", "AGENTS.md"), wrap: func(s string) string { return "# Antigravity — Lea Instructions\n\n## SessionStart Reminder\n" + s + "\n" }},
-		{path: filepath.Join(projectDir, "AIDER.md"), wrap: func(s string) string { return "# Aider — Lea Instructions\n\n" + s + "\n" }},
-		{path: filepath.Join(home, ".kilocode", "rules", "lea.md"), wrap: func(s string) string { return "# KiloCode — Lea Instructions\n\n" + s + "\n" }},
-		{path: filepath.Join(projectDir, ".pi", "AGENTS.md"), wrap: func(s string) string { return "# Pi — Lea Instructions\n\n## SessionStart Reminder\n" + s + "\n" }},
-	}
-
-	for _, t := range targets {
-		dir := filepath.Dir(t.path)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("cannot create directory %q: %w", dir, err)
-		}
-		if err := os.WriteFile(t.path, []byte(t.wrap(content)), 0644); err != nil {
-			return fmt.Errorf("cannot write %q: %w", t.path, err)
-		}
-	}
-
-	return nil
+	return os.WriteFile(path, []byte(content), 0644)
 }
