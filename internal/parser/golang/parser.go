@@ -15,16 +15,33 @@ import (
 	graph "github.com/PizenLabs/lea/internal/graph/contracts"
 )
 
+// StructFieldInfo holds the type information for a struct field.
+type StructFieldInfo struct {
+	FieldName string // The name of the field
+	FieldType string // The resolved type name (short name, e.g., "WalletRepository")
+}
+
+// StructInfo holds type information for a parsed struct.
+type StructInfo struct {
+	PkgPath string
+	Name    string
+	Fields  []StructFieldInfo
+}
+
 // Parser parses Go source files into graph nodes and edges.
 type Parser struct {
-	fset       *token.FileSet
-	moduleName string
+	fset            *token.FileSet
+	moduleName      string
+	structIndex     map[string]*StructInfo // key: "pkgPath:StructName"
+	localVarTypes   map[string]string      // key: varName -> "pkgPath:TypeName" (per-file scope)
+	funcReturnTypes map[string]string      // key: "pkgPath:FuncName" -> "TypeName" (constructor return types)
 }
 
 // NewParser creates a new Go source parser.
 func NewParser() *Parser {
 	return &Parser{
-		fset: token.NewFileSet(),
+		fset:            token.NewFileSet(),
+		funcReturnTypes: make(map[string]string),
 	}
 }
 
@@ -60,6 +77,12 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 	var nodes []*graph.Node
 	var edges []*graph.Edge
 
+	// Reset per-file local type tracking
+	p.localVarTypes = make(map[string]string)
+
+	// Extract imports for alias resolution during var tracking
+	imports := p.extractImports(f)
+
 	// Use directory as package path for now
 	pkgPath := filepath.Dir(path)
 	pkgID := fmt.Sprintf("pkg:%s", pkgPath)
@@ -78,17 +101,27 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 			nodeType := graph.NodeFunction
 			id := fmt.Sprintf("func:%s:%s", pkgPath, funcName)
 
+			// Register constructor return type for call-site resolution
+			p.registerFuncReturnType(x, pkgPath)
+
 			if x.Recv != nil {
 				nodeType = graph.NodeMethod
 				recvType := p.getReceiverType(x.Recv)
 				if recvType != "" {
 					id = fmt.Sprintf("method:%s:%s.%s", pkgPath, recvType, funcName)
-					// Add USES edge from method to its receiver struct/interface
+					// Add BELONGS_TO edge from method to its receiver struct/interface
 					edges = append(edges, &graph.Edge{
 						FromID: id,
 						ToID:   fmt.Sprintf("type:%s:%s", pkgPath, recvType),
 						Type:   graph.EdgeBelongsTo,
 					})
+
+					// Track receiver variable name in local type table for deep selector resolution
+					// e.g., func (s *PaymentService) ProcessDeposit() -> localVarTypes["s"] = "pkgPath:PaymentService"
+					if len(x.Recv.List) > 0 && len(x.Recv.List[0].Names) > 0 {
+						recvName := x.Recv.List[0].Names[0].Name
+						p.localVarTypes[recvName] = fmt.Sprintf("%s:%s", pkgPath, recvType)
+					}
 				}
 			}
 
@@ -112,9 +145,11 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 			typeName := x.Name.Name
 			var nodeType graph.NodeType
 			var it *ast.InterfaceType
+			var st *ast.StructType
 			switch t := x.Type.(type) {
 			case *ast.StructType:
 				nodeType = graph.NodeStruct
+				st = t
 			case *ast.InterfaceType:
 				nodeType = graph.NodeInterface
 				it = t
@@ -137,6 +172,27 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 				Type:   graph.EdgeBelongsTo,
 			})
 
+			// Register struct fields for deep selector resolution (Issue 2 fix)
+			if st != nil {
+				structKey := fmt.Sprintf("%s:%s", pkgPath, typeName)
+				if p.structIndex == nil {
+					p.structIndex = make(map[string]*StructInfo)
+				}
+				si := &StructInfo{PkgPath: pkgPath, Name: typeName}
+				for _, field := range st.Fields.List {
+					if len(field.Names) == 0 {
+						continue
+					}
+					fieldName := field.Names[0].Name
+					fieldTypeStr := p.exprTypeName(field.Type)
+					si.Fields = append(si.Fields, StructFieldInfo{
+						FieldName: fieldName,
+						FieldType: fieldTypeStr,
+					})
+				}
+				p.structIndex[structKey] = si
+			}
+
 			if it != nil {
 				for _, method := range it.Methods.List {
 					if len(method.Names) > 0 {
@@ -155,6 +211,26 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 							Type:   graph.EdgeBelongsTo,
 						})
 					}
+				}
+			}
+
+		case *ast.GenDecl:
+			// Track variable assignments to build local type table (Issue 1 fix)
+			for _, spec := range x.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) == 0 || vs.Type != nil {
+					continue
+				}
+				for _, val := range vs.Values {
+					p.trackAssignmentVar(val, vs.Names[0].Name, pkgPath, imports)
+				}
+			}
+
+		case *ast.AssignStmt:
+			// Track short variable declarations like calc := &Calculator{}
+			if x.Tok == token.DEFINE && len(x.Lhs) == 1 && len(x.Rhs) == 1 {
+				if ident, ok := x.Lhs[0].(*ast.Ident); ok {
+					p.trackAssignmentVar(x.Rhs[0], ident.Name, pkgPath, imports)
 				}
 			}
 		}
@@ -182,6 +258,150 @@ func (p *Parser) getReceiverType(recv *ast.FieldList) string {
 	return ""
 }
 
+// exprTypeName extracts the string representation of a type expression,
+// e.g., *ast.Ident -> name, *ast.StarExpr -> *Inner, *ast.SelectorExpr -> pkg.Type
+func (p *Parser) exprTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return "*" + p.exprTypeName(t.X)
+	case *ast.SelectorExpr:
+		return p.exprTypeName(t.X) + "." + t.Sel.Name
+	case *ast.ArrayType:
+		return "[]" + p.exprTypeName(t.Elt)
+	case *ast.MapType:
+		return "map[" + p.exprTypeName(t.Key) + "]" + p.exprTypeName(t.Value)
+	default:
+		return fmt.Sprintf("%T", expr)
+	}
+}
+
+// registerFuncReturnType captures the return type of a function (typically a constructor)
+// so that call-site resolution can use the exact concrete type name instead of inferring it
+// from the function name (e.g., NewPayment returning *PaymentService rather than "Payment").
+func (p *Parser) registerFuncReturnType(fn *ast.FuncDecl, pkgPath string) {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return
+	}
+	results := fn.Type.Results.List
+	if len(results) != 1 {
+		return
+	}
+	// Unwrap pointer indirection to get the base type name
+	typ := results[0].Type
+	for {
+		star, ok := typ.(*ast.StarExpr)
+		if !ok {
+			break
+		}
+		typ = star.X
+	}
+	if ident, ok := typ.(*ast.Ident); ok {
+		if p.funcReturnTypes == nil {
+			p.funcReturnTypes = make(map[string]string)
+		}
+		key := fmt.Sprintf("%s:%s", pkgPath, fn.Name.Name)
+		p.funcReturnTypes[key] = ident.Name
+	}
+}
+
+// trackAssignmentVar records the inferred type of a variable from its right-hand side expression.
+// This builds the local type scope table for resolving method calls on variables (Issue 1 fix).
+// When imports are available, import aliases are expanded to canonical package paths,
+// and registered constructor return types are used instead of name-based inference.
+func (p *Parser) trackAssignmentVar(rhs ast.Expr, varName string, pkgPath string, imports map[string]string) {
+	if p.localVarTypes == nil {
+		p.localVarTypes = make(map[string]string)
+	}
+	switch val := rhs.(type) {
+	case *ast.CallExpr:
+		// varName := NewConstructor() or varName := package.NewConstructor()
+		switch fun := val.Fun.(type) {
+		case *ast.Ident:
+			// NewConstructor() - infer type from function name (strip "New" prefix)
+			typeName := strings.TrimPrefix(fun.Name, "New")
+			if typeName != "" && typeName != fun.Name {
+				// Look up registered return type for precise type name
+				funcKey := fmt.Sprintf("%s:%s", pkgPath, fun.Name)
+				if registeredType, ok := p.funcReturnTypes[funcKey]; ok {
+					typeName = registeredType
+				}
+				p.localVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, typeName)
+			}
+		case *ast.SelectorExpr:
+			// package.NewConstructor() - resolve alias, use registered return type
+			if id, ok := fun.X.(*ast.Ident); ok {
+				pkgAlias := id.Name
+				constructorName := fun.Sel.Name
+
+				// First try to look up registered return type before falling back to name inference
+				typeName := ""
+
+				// Resolve package alias to canonical path for func key lookup
+				canonPkg := pkgAlias
+				if path, ok := imports[pkgAlias]; ok {
+					if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+						canonPkg = strings.TrimPrefix(path, p.moduleName)
+						canonPkg = strings.TrimPrefix(canonPkg, "/")
+					} else {
+						canonPkg = path
+					}
+				}
+
+				// Look up registered return type for precise type name
+				funcKey := fmt.Sprintf("%s:%s", canonPkg, constructorName)
+				if registeredType, ok := p.funcReturnTypes[funcKey]; ok {
+					typeName = registeredType
+				}
+
+				// Fall back to name-based inference if no registered type
+				if typeName == "" {
+					typeName = strings.TrimPrefix(constructorName, "New")
+				}
+
+				if typeName != "" && typeName != constructorName {
+					p.localVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, typeName)
+				}
+			}
+		}
+	case *ast.UnaryExpr:
+		if val.Op == token.AND {
+			// varName := &Type{}
+			if comp, ok := val.X.(*ast.CompositeLit); ok {
+				if t, ok := comp.Type.(*ast.Ident); ok {
+					p.localVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, t.Name)
+				}
+				if t, ok := comp.Type.(*ast.SelectorExpr); ok {
+					if id, ok := t.X.(*ast.Ident); ok {
+						pkgAlias := id.Name
+						canonPkg := pkgAlias
+						if path, ok := imports[pkgAlias]; ok {
+							if p.moduleName != "" && strings.HasPrefix(path, p.moduleName) {
+								canonPkg = strings.TrimPrefix(path, p.moduleName)
+								canonPkg = strings.TrimPrefix(canonPkg, "/")
+							} else {
+								canonPkg = path
+							}
+						}
+						p.localVarTypes[varName] = fmt.Sprintf("%s:%s", canonPkg, t.Sel.Name)
+					}
+				}
+			}
+		}
+	case *ast.CompositeLit:
+		// varName := Type{}
+		if t, ok := val.Type.(*ast.Ident); ok {
+			p.localVarTypes[varName] = fmt.Sprintf("%s:%s", pkgPath, t.Name)
+		}
+	}
+}
+
+// resolveID resolves a call target string to a graph node ID.
+// Attempts local variable type resolution first (Issue 1 fix), then falls back to
+// package import resolution, and finally resorts to "unknown:" prefix.
+// When a local variable type key uses an import alias as the package path,
+// the alias is resolved through the imports table to produce a canonical path.
 func (p *Parser) resolveID(target string, imports map[string]string, pkgPath string) string {
 	if !strings.Contains(target, ".") {
 		return fmt.Sprintf("func:%s:%s", pkgPath, target)
@@ -190,6 +410,46 @@ func (p *Parser) resolveID(target string, imports map[string]string, pkgPath str
 	parts := strings.SplitN(target, ".", 2)
 	prefix := parts[0]
 	name := parts[1]
+
+	// Check local variable type table first (Issue 1 fix)
+	if p.localVarTypes != nil {
+		if typeKey, ok := p.localVarTypes[prefix]; ok {
+			// prefix is a variable name, name is the method
+			typeParts := strings.SplitN(typeKey, ":", 2)
+			if len(typeParts) == 2 {
+				pkgPart := typeParts[0]
+				typeNamePart := typeParts[1]
+
+				// If the package part is an import alias, resolve it to canonical path
+				if canonicalPath, ok := imports[pkgPart]; ok {
+					if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
+						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
+						rel = strings.TrimPrefix(rel, "/")
+						pkgPart = rel
+					} else {
+						pkgPart = canonicalPath
+					}
+				}
+
+				// Check if typeNamePart has a package prefix (e.g., "domain.WalletRepository")
+				if strings.Contains(typeNamePart, ".") {
+					subParts := strings.SplitN(typeNamePart, ".", 2)
+					// Try resolving through imports
+					if pkgPath2, ok := imports[subParts[0]]; ok {
+						if p.moduleName != "" && strings.HasPrefix(pkgPath2, p.moduleName) {
+							rel := strings.TrimPrefix(pkgPath2, p.moduleName)
+							rel = strings.TrimPrefix(rel, "/")
+							return fmt.Sprintf("method:%s:%s.%s", rel, subParts[1], name)
+						}
+						return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], name)
+					}
+					return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeNamePart, name)
+				}
+				return fmt.Sprintf("method:%s:%s.%s", pkgPart, typeNamePart, name)
+			}
+			return fmt.Sprintf("unknown:%s.%s", prefix, name)
+		}
+	}
 
 	if path, ok := imports[prefix]; ok {
 		// It's a package call
@@ -225,6 +485,11 @@ func (p *Parser) ExtractCalls(_ context.Context, path string) ([]*graph.Edge, er
 			if x.Recv != nil {
 				recvType := p.getReceiverType(x.Recv)
 				currentFunc = fmt.Sprintf("method:%s:%s.%s", pkgPath, recvType, x.Name.Name)
+				// Track receiver variable for deep selector resolution
+				if len(x.Recv.List) > 0 && len(x.Recv.List[0].Names) > 0 && recvType != "" {
+					recvName := x.Recv.List[0].Names[0].Name
+					p.localVarTypes[recvName] = fmt.Sprintf("%s:%s", pkgPath, recvType)
+				}
 			} else {
 				currentFunc = fmt.Sprintf("func:%s:%s", pkgPath, x.Name.Name)
 			}
@@ -232,10 +497,8 @@ func (p *Parser) ExtractCalls(_ context.Context, path string) ([]*graph.Edge, er
 			if currentFunc == "" {
 				return true
 			}
-			callTarget := p.getCallTarget(x)
-			if callTarget != "" {
-				targetID := p.resolveID(callTarget, imports, pkgPath)
-
+			targetID := p.resolveCallTarget(x, imports, pkgPath)
+			if targetID != "" {
 				edges = append(edges, &graph.Edge{
 					FromID: currentFunc,
 					ToID:   targetID,
@@ -270,6 +533,11 @@ func (p *Parser) ExtractControlFlow(_ context.Context, path string) ([]*graph.Ed
 		if fn.Recv != nil {
 			recvType := p.getReceiverType(fn.Recv)
 			currentFunc = fmt.Sprintf("method:%s:%s.%s", pkgPath, recvType, fn.Name.Name)
+			// Track receiver variable for deep selector resolution
+			if len(fn.Recv.List) > 0 && len(fn.Recv.List[0].Names) > 0 && recvType != "" {
+				recvName := fn.Recv.List[0].Names[0].Name
+				p.localVarTypes[recvName] = fmt.Sprintf("%s:%s", pkgPath, recvType)
+			}
 		} else {
 			currentFunc = fmt.Sprintf("func:%s:%s", pkgPath, fn.Name.Name)
 		}
@@ -365,18 +633,17 @@ func (p *Parser) collectCallsFromNode(node ast.Node, pkgPath, currentFunc string
 		if !ok {
 			return true
 		}
-		callTarget := p.getCallTarget(callExpr)
-		if callTarget == "" {
+		targetID := p.resolveCallTarget(callExpr, imports, pkgPath)
+		if targetID == "" {
 			return true
 		}
-
-		targetID := p.resolveID(callTarget, imports, pkgPath)
 
 		*order = *order + 1
 		sequence := *order
 		metadata := map[string]interface{}{
 			"order":   sequence,
 			"context": p.contextString(ctxStack),
+			"target":  p.getCallTarget(callExpr),
 		}
 
 		*edges = append(*edges, &graph.Edge{
@@ -416,13 +683,156 @@ func (p *Parser) exprString(expr ast.Expr) string {
 	return buf.String()
 }
 
+// getCallTarget extracts the full call target string from a CallExpr,
+// recursively resolving nested SelectorExpr chains (Issue 2 fix).
 func (p *Parser) getCallTarget(ce *ast.CallExpr) string {
-	switch x := ce.Fun.(type) {
+	return p.selectorChainString(ce.Fun)
+}
+
+// selectorChainString recursively flattens a selector expression chain into a dot-separated string.
+// e.g., s.repo.UpdateBalance -> "s.repo.UpdateBalance"
+func (p *Parser) selectorChainString(expr ast.Expr) string {
+	switch x := expr.(type) {
 	case *ast.Ident:
 		return x.Name
 	case *ast.SelectorExpr:
-		if ident, ok := x.X.(*ast.Ident); ok {
-			return fmt.Sprintf("%s.%s", ident.Name, x.Sel.Name)
+		base := p.selectorChainString(x.X)
+		if base == "" {
+			return ""
+		}
+		return base + "." + x.Sel.Name
+	case *ast.ParenExpr:
+		return p.selectorChainString(x.X)
+	case *ast.StarExpr:
+		return p.selectorChainString(x.X)
+	default:
+		return ""
+	}
+}
+
+// resolveCallTarget resolves a call expression to a graph node ID using
+// the local type registry for method calls on variables (Issue 1+2 fix).
+// For deeply nested selectors like s.repo.UpdateBalance, it walks the field chain
+// through the struct type registry to find the underlying method.
+func (p *Parser) resolveCallTarget(ce *ast.CallExpr, imports map[string]string, pkgPath string) string {
+	// Get the raw call target string (handles deep selectors)
+	target := p.getCallTarget(ce)
+	if target == "" {
+		return ""
+	}
+
+	// If it's a simple identifier, resolve directly
+	if !strings.Contains(target, ".") {
+		return p.resolveID(target, imports, pkgPath)
+	}
+
+	parts := strings.Split(target, ".")
+	methodName := parts[len(parts)-1]
+
+	// Check if the first part is a local variable (receiver or local var)
+	// If so, attempt deep field chain resolution through struct registry
+	if p.localVarTypes != nil {
+		if typeKey, ok := p.localVarTypes[parts[0]]; ok {
+			// Walk the field chain (parts[1..n-1]) through struct types
+			typeParts := strings.SplitN(typeKey, ":", 2)
+			if len(typeParts) == 2 {
+				// Expand import alias in package path part to canonical path
+				pkgPart := typeParts[0]
+				if canonicalPath, ok := imports[pkgPart]; ok {
+					if p.moduleName != "" && strings.HasPrefix(canonicalPath, p.moduleName) {
+						rel := strings.TrimPrefix(canonicalPath, p.moduleName)
+						rel = strings.TrimPrefix(rel, "/")
+						pkgPart = rel
+					} else {
+						pkgPart = canonicalPath
+					}
+				}
+				currentType := fmt.Sprintf("%s:%s", pkgPart, typeParts[1])
+				resolved := true
+				for i := 1; i < len(parts)-1; i++ {
+					fieldType := p.resolveFieldType(currentType, parts[i], imports)
+					if fieldType == "" {
+						resolved = false
+						break
+					}
+					currentType = fieldType
+				}
+				if resolved {
+					if uri := p.typeKeyToMethodURI(currentType, methodName, imports); uri != "" {
+						return uri
+					}
+				}
+			}
+		}
+	}
+
+	// Fall back to standard resolution (package.func or unknown)
+	return p.resolveID(target, imports, pkgPath)
+}
+
+// typeKeyToMethodURI converts a type key and method name to a proper graph node URI.
+// currentType can be either "pkgPath:TypeName" or "packageQualifier.TypeName"
+func (p *Parser) typeKeyToMethodURI(currentType, methodName string, imports map[string]string) string {
+	if strings.Contains(currentType, ":") {
+		// Already in "pkgPath:TypeName" format
+		ctParts := strings.SplitN(currentType, ":", 2)
+		return fmt.Sprintf("method:%s:%s.%s", ctParts[0], ctParts[1], methodName)
+	}
+
+	// Package-qualified type like "domain.WalletRepository"
+	if strings.Contains(currentType, ".") {
+		subParts := strings.SplitN(currentType, ".", 2)
+		if len(subParts) == 2 {
+			if pkgPath2, ok := imports[subParts[0]]; ok {
+				if p.moduleName != "" && strings.HasPrefix(pkgPath2, p.moduleName) {
+					rel := strings.TrimPrefix(pkgPath2, p.moduleName)
+					rel = strings.TrimPrefix(rel, "/")
+					return fmt.Sprintf("method:%s:%s.%s", rel, subParts[1], methodName)
+				}
+				return fmt.Sprintf("method:%s:%s.%s", pkgPath2, subParts[1], methodName)
+			}
+			// If import not found, try using first part as another type key recursively
+			return fmt.Sprintf("unknown:%s.%s", currentType, methodName)
+		}
+	}
+
+	return ""
+}
+
+// resolveFieldType looks up the type of a field on a struct type from the struct registry.
+// For package-qualified field types (e.g., "domain.WalletRepository"), it resolves the
+// import to produce a fully qualified "pkgPath:TypeName" key, preventing unknown: fallbacks.
+func (p *Parser) resolveFieldType(structKey string, fieldName string, imports map[string]string) string {
+	if p.structIndex == nil {
+		return ""
+	}
+	si, ok := p.structIndex[structKey]
+	if !ok {
+		return ""
+	}
+	for _, f := range si.Fields {
+		if f.FieldName == fieldName {
+			// Extract just the type name (handle * prefix, package qualifiers)
+			fieldType := f.FieldType
+			fieldType = strings.TrimPrefix(fieldType, "*")
+			if strings.Contains(fieldType, ".") {
+				// Package-qualified type like "domain.WalletRepository"
+				// Resolve through imports to produce "pkgPath:TypeName" format
+				subParts := strings.SplitN(fieldType, ".", 2)
+				if len(subParts) == 2 {
+					if pkgPath2, ok := imports[subParts[0]]; ok {
+						if p.moduleName != "" && strings.HasPrefix(pkgPath2, p.moduleName) {
+							rel := strings.TrimPrefix(pkgPath2, p.moduleName)
+							rel = strings.TrimPrefix(rel, "/")
+							return fmt.Sprintf("%s:%s", rel, subParts[1])
+						}
+						return fmt.Sprintf("%s:%s", pkgPath2, subParts[1])
+					}
+				}
+				// Fallback: return unqualified form; typeKeyToMethodURI will also try imports
+				return fieldType
+			}
+			return fmt.Sprintf("%s:%s", si.PkgPath, fieldType)
 		}
 	}
 	return ""

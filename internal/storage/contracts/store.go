@@ -21,6 +21,10 @@ type Store interface {
 	DeleteNode(ctx context.Context, id string) error
 	DeleteByFile(ctx context.Context, file string) error
 	DeleteEdgesFrom(ctx context.Context, id string) error
+	// ListNodesByType returns all nodes of a specific node type.
+	ListNodesByType(ctx context.Context, nodeType graph.NodeType) ([]*graph.Node, error)
+	// GetEdgesByType returns all edges of a specific edge type.
+	GetEdgesByType(ctx context.Context, edgeType graph.EdgeType) ([]*graph.Edge, error)
 	Close() error
 }
 

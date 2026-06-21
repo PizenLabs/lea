@@ -1,0 +1,11 @@
+version: 1
+allow:
+  - from: "internal/service"
+    to: ["internal/domain", "pkg/logger"]
+  - from: "internal/repository"
+    to: ["internal/domain"]
+deny:
+  - from: "internal/repository"
+    to: ["internal/service"] # Disallow Repository layer from calling Service layer
+  - from: "pkg/logger"
+    to: ["internal/service", "internal/repository"] # Disallow utility package from calling core logic

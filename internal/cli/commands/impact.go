@@ -16,7 +16,7 @@ var impactCmd = &cobra.Command{
 	Short: "Find symbols that depend on this symbol",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		symbolID := args[0]
+		input := args[0]
 
 		dbPath := filepath.Join(".lea", "graph.db")
 		store, err := sqlite.NewStore(dbPath)
@@ -26,9 +26,61 @@ var impactCmd = &cobra.Command{
 		defer func() { _ = store.Close() }()
 
 		ctx := context.Background()
+
+		// Normalize user input to a proper symbol ID (Issue 4 fix)
+		symbolID, err := resolveSymbolID(ctx, store, input)
+		if err != nil {
+			return err
+		}
+
+		// If resolved symbol is a concrete method, also resolve the interface method
+		// counterpart by following IMPLEMENTS_METHOD edges
+		additionalIDs := []string{}
+		node, err := store.GetNode(ctx, symbolID)
+		if err == nil && node != nil && strings.HasPrefix(symbolID, "method:") {
+			edgeList, err := store.GetEdgesByType(ctx, graph.EdgeImplementsMethod)
+			if err == nil {
+				for _, e := range edgeList {
+					if e.FromID == symbolID {
+						additionalIDs = append(additionalIDs, e.ToID)
+					}
+				}
+			}
+		}
+
+		// Query impact for primary symbol
 		nodes, edges, err := store.GetImpactRecursive(ctx, symbolID)
 		if err != nil {
 			return err
+		}
+
+		// Query impact for interface counterpart(s) and union results
+		seenNodes := make(map[string]bool)
+		for _, n := range nodes {
+			seenNodes[n.ID] = true
+		}
+
+		for _, aid := range additionalIDs {
+			moreNodes, moreEdges, err := store.GetImpactRecursive(ctx, aid)
+			if err != nil {
+				continue
+			}
+			for _, n := range moreNodes {
+				if !seenNodes[n.ID] {
+					nodes = append(nodes, n)
+					seenNodes[n.ID] = true
+				}
+			}
+			edges = append(edges, moreEdges...)
+
+			// Also add the interface method node itself to the result
+			if !seenNodes[aid] {
+				ifaceNode, err := store.GetNode(ctx, aid)
+				if err == nil && ifaceNode != nil {
+					nodes = append(nodes, ifaceNode)
+					seenNodes[aid] = true
+				}
+			}
 		}
 
 		if len(nodes) == 0 {

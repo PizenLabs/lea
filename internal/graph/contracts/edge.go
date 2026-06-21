@@ -19,6 +19,8 @@ const (
 	EdgeDependsOn EdgeType = "DEPENDS_ON"
 	// EdgeFlowsThrough indicates data flow between symbols.
 	EdgeFlowsThrough EdgeType = "FLOWS_THROUGH"
+	// EdgeImplementsMethod indicates that a concrete method implements an interface method.
+	EdgeImplementsMethod EdgeType = "IMPLEMENTS_METHOD"
 )
 
 // Edge represents a directed relationship between two nodes in the graph.

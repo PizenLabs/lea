@@ -11,7 +11,7 @@ import (
 func TestParseFile_Python(t *testing.T) {
 	p := NewParser()
 	ctx := context.Background()
-	path := "../../../testdata/python/simple.py"
+	path := "../../../testdata/esc/python/simple.py"
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
