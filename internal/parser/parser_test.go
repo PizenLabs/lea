@@ -370,7 +370,7 @@ func TestExtractControlFlow_WithTypeRegistry(t *testing.T) {
 
 	pkgPath := filepath.Dir(absPath)
 	expectedFrom := fmt.Sprintf("method:%s:PaymentService.ProcessDeposit", pkgPath)
-	
+
 	for _, e := range edges {
 		t.Logf("Flow: %s -> %s (order=%d, type=%s)", e.FromID, e.ToID, e.Sequence, e.Type)
 		_ = expectedFrom

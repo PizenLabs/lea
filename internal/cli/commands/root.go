@@ -204,8 +204,6 @@ func resolveSymbolID(ctx context.Context, store contracts.Store, input string) (
 	return "", fmt.Errorf("symbol %q not found in the graph. Use 'lea symbols' to list available symbols", input)
 }
 
-
-
 // openStore opens the .lea/graph.db store from the current or specified root.
 func openStore(root string) (contracts.Store, error) {
 	dbPath := root
