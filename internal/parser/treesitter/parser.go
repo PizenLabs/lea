@@ -50,6 +50,7 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 	}
 
 	parser := sitter.NewParser()
+	defer parser.Close()
 	if err := parser.SetLanguage(lang); err != nil {
 		return nil, nil, fmt.Errorf("failed to set language: %w", err)
 	}
@@ -58,6 +59,7 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 	if tree == nil {
 		return nil, nil, fmt.Errorf("failed to parse %s", path)
 	}
+	defer tree.Close()
 
 	var nodes []*graph.Node
 	var edges []*graph.Edge
@@ -76,11 +78,11 @@ func (p *Parser) ParseFile(_ context.Context, path string) ([]*graph.Node, []*gr
 		return nodes, edges, nil
 	}
 
-	fmt.Printf("Creating query for %s with lang %p and query:\n%s\n", ext, lang, queryStr)
 	query, qErr := sitter.NewQuery(lang, queryStr)
 	if qErr != nil {
 		return nil, nil, fmt.Errorf("failed to create query: %w", qErr)
 	}
+	defer query.Close()
 
 	cursor := sitter.NewQueryCursor()
 	captures := cursor.Captures(query, tree.RootNode(), content)
