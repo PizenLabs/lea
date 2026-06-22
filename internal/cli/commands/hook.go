@@ -68,7 +68,7 @@ var hookPreToolCmd = &cobra.Command{
 			isLeaTool = true
 		} else {
 			// Fallback: check if the tool name matches one of our MCP tools
-			leaTools := []string{"impact", "flow", "neighbors", "violations", "symbols"}
+			leaTools := []string{"impact", "flow", "neighbors", "violations", "symbols", "view_symbol_ast", "trace_execution_path"}
 			for _, t := range leaTools {
 				if lowerName == t || strings.HasSuffix(lowerName, "__"+t) || strings.HasSuffix(lowerName, "/"+t) {
 					isLeaTool = true
@@ -113,10 +113,11 @@ var hookPreToolCmd = &cobra.Command{
 		}
 
 		dbPath := filepath.Join(leaDir, "graph.db")
-		store, err := sqlite.NewStore(dbPath)
+store, err := sqlite.NewStore(dbPath)
 		if err != nil {
-			os.Exit(0)
-		}
+			fmt.Fprintf(os.Stderr, "Error opening store: %v\n", err)
+			os.Exit(2)
+			}
 		defer func() { _ = store.Close() }()
 
 		ctx := context.Background()

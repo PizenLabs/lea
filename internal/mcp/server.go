@@ -30,7 +30,7 @@ type Server struct {
 // Tool Arguments
 // -----------------------------------------------------------------------------
 
-// GetSymbolContextArgs defines the input for the get_symbol_context tool.
+// GetSymbolContextArgs defines the input for the view_symbol_ast tool.
 type GetSymbolContextArgs struct {
 	SymbolID string `json:"symbol_id" jsonschema:"description=The unique symbol ID (e.g. func:path:name)"`
 }
@@ -132,7 +132,7 @@ func (s *Server) registerTools(server *mcp_golang.Server) error {
 // registerGetSymbolContextTool registers the symbol context compiler tool.
 func (s *Server) registerGetSymbolContextTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"get_symbol_context",
+		"view_symbol_ast",
 		"Generates AI-optimized markdown context for a symbol",
 		func(
 			ctx context.Context,

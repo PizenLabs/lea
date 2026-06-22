@@ -663,13 +663,16 @@ func writeTOML(path string, v map[string]any) error {
 
 // writeInstructions writes the global Pizen ecosystem instructions file.
 func writeInstructions(path string) error {
-	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
+	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
 
-CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
-first to discover the exact Symbol ID. DO NOT guess the code structure.
+This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
 
-Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
-flow, or neighbors) to map structural reasoning and blast radius.
+## 1. Tool Priority Queue (Strict Compliance)
+1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
+2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
+
+## 2. Enforcement
+Before executing any tool call, verify that you are leveraging the custom AST-aware commands first. Guessing file paths via generic tools before attempting a structured lookup is penalized.
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }
@@ -683,13 +686,16 @@ func writeInstructionsFile(t target) error {
 		return err
 	}
 	path := filepath.Join(t.ConfigDir, t.InstructionFile)
-	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
+	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
 
-CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
-first to discover the exact Symbol ID. DO NOT guess the code structure.
+This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
 
-Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
-flow, or neighbors) to map structural reasoning and blast radius.
+## 1. Tool Priority Queue (Strict Compliance)
+1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
+2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
+
+## 2. Enforcement
+Before executing any tool call, verify that you are leveraging the custom AST-aware commands first. Guessing file paths via generic tools before attempting a structured lookup is penalized.
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }
