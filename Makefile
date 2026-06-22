@@ -1,6 +1,6 @@
 # Project variables
 BINARY_NAME=lea
-VERSION=0.2.1
+VERSION=0.2.2
 BUILD_DIR=bin
 MAIN_PATH=./cmd/lea/main.go
 
