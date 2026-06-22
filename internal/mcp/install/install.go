@@ -254,6 +254,12 @@ func (m selectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearAll()
 			return m, nil
 		}
+	case tea.WindowSizeMsg:
+		h := msg.Height - 4
+		if h < 0 {
+			h = 0
+		}
+		m.list.SetSize(msg.Width, h)
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
