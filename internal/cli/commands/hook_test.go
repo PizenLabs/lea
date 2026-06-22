@@ -23,7 +23,7 @@ func TestHookPreToolInvalidSymbol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	store.Close()
+	_ = store.Close()
 
 	// Prepare JSON input with a non-existent symbol
 	jsonInput := []byte(`{"tool_name":"pizen-lea__impact","tool_input":{"symbol":"nonexistent_symbol"}}`)
@@ -55,7 +55,7 @@ func TestHookPreToolInvalidSymbol(t *testing.T) {
 	}
 	defer func() {
 		os.Stdin = oldStdin
-		os.Chdir(oldWd)
+		_ = os.Chdir(oldWd)
 		osExit = osExitOriginal
 		_ = recover()
 		if exitCode != 2 {
