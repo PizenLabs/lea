@@ -21,6 +21,10 @@ type HookInput struct {
 	ToolInputCamel map[string]any `json:"toolInput"`
 }
 
+// osExit is a mockable version of os.Exit for testing
+var osExit = os.Exit
+var osExitOriginal = os.Exit
+
 var hookCmd = &cobra.Command{
 	Use:   "hook",
 	Short: "Run tool execution hooks for AI coding agents",
@@ -35,17 +39,17 @@ var hookPreToolCmd = &cobra.Command{
 		stdinData, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			// Fail open on error reading stdin to avoid blocking developer flow
-			os.Exit(0)
+			osExit(0)
 		}
 
 		if len(stdinData) == 0 {
-			os.Exit(0)
+			osExit(0)
 		}
 
 		var input HookInput
 		if err := json.Unmarshal(stdinData, &input); err != nil {
 			// Fail open on invalid JSON
-			os.Exit(0)
+			osExit(0)
 		}
 
 		toolName := input.ToolName
@@ -56,7 +60,7 @@ var hookPreToolCmd = &cobra.Command{
 		// Clean up toolName
 		toolName = strings.TrimSpace(toolName)
 		if toolName == "" {
-			os.Exit(0)
+			osExit(0)
 		}
 
 		// Check if it's a pizen-lea tool.
@@ -78,7 +82,7 @@ var hookPreToolCmd = &cobra.Command{
 		}
 
 		if !isLeaTool {
-			os.Exit(0)
+			osExit(0)
 		}
 
 		// It's a pizen-lea tool. Get tool input.
@@ -102,21 +106,21 @@ var hookPreToolCmd = &cobra.Command{
 
 		if symbolName == "" {
 			// If no symbol name is passed, let it pass to standard validation/execution
-			os.Exit(0)
+			osExit(0)
 		}
 
 		// Find .lea directory starting from current working directory
 		leaDir, err := findLeaDir(".")
 		if err != nil {
 			// If .lea dir doesn't exist, we can't validate, so fail open
-			os.Exit(0)
+			osExit(0)
 		}
 
 		dbPath := filepath.Join(leaDir, "graph.db")
 		store, err := sqlite.NewStore(dbPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening store: %v\n", err)
-			os.Exit(2)
+			osExit(2)
 		}
 		defer func() { _ = store.Close() }()
 
@@ -127,11 +131,11 @@ var hookPreToolCmd = &cobra.Command{
 			// and print the warning message to stderr.
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			fmt.Fprintln(os.Stderr, "CRITICAL: You MUST first search for the symbol using pizen-lynx (via search or resolve) to find the correct Symbol ID before calling pizen-lea tools.")
-			os.Exit(2)
+			osExit(2)
 		}
 
 		// Success, allow tool execution
-		os.Exit(0)
+		osExit(0)
 	},
 }
 
