@@ -12,9 +12,16 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
+
+// Options controls automated behavior of the install command.
+type Options struct {
+	AutoSelectAll bool
+}
 
 // MCPEntry represents a single MCP tool entry in the JSON config schema.
 type MCPEntry struct {
@@ -24,31 +31,31 @@ type MCPEntry struct {
 }
 
 type target struct {
-	Name   string
-	Path   string // after tilde expansion
-	Format string // json, yaml, toml
+	Name            string
+	Path            string
+	Format          string
+	ConfigDir       string
+	InstructionFile string
 }
 
-// installTargets returns the full list of MCP configuration targets.
-func installTargets() []target {
-	home := homeDir()
-	configDir := filepath.Join(home, ".config")
-
-	vscodeBase := vscodeGlobalStorageDir(home)
-
+// installTargets returns the full list of MCP configuration targets using
+// global/home configuration directories. No project-scoped directories are used.
+func installTargets(home, vscodeUserDir string) []target {
+	zedDir := zedConfigDir(home)
 	return []target{
-		{Name: "Claude Code", Path: filepath.Join(home, ".claude", ".mcp.json"), Format: "json"},
-		{Name: "VS Code (Cline/Roo Code/Codex CLI)", Path: filepath.Join(vscodeBase, "saoudrizwan.claude-dev", "settings", "mcp_settings.json"), Format: "json"},
-		{Name: "OpenCode", Path: filepath.Join(configDir, "opencode", "opencode.json"), Format: "opencode"},
-		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json"},
-		{Name: "PizenLabs Shared MCP", Path: filepath.Join(configDir, "mcp", "mcp.json"), Format: "json"},
-		{Name: "Zed IDE", Path: filepath.Join(home, ".zed", "settings.json"), Format: "json"},
-		{Name: "Gemini CLI", Path: filepath.Join(configDir, "gemini-cli", "mcp.json"), Format: "json"},
-		{Name: "OpenClaw", Path: filepath.Join(configDir, "openclaw", "mcp.json"), Format: "json"},
-		{Name: "Aider", Path: filepath.Join(home, ".aider.conf.yml"), Format: "yaml"},
-		{Name: "Antigravity", Path: filepath.Join(configDir, "antigravity", "mcp_manifest.json"), Format: "json"},
-		{Name: "Kiro Agent", Path: filepath.Join(configDir, "kiro", "config.toml"), Format: "toml"},
-		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "config.json"), Format: "json"},
+		{Name: "Claude Code", Path: filepath.Join(home, ".claude", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".claude"), InstructionFile: "CLAUDE.md"},
+		{Name: "Codex CLI", Path: filepath.Join(home, ".codex", "config.toml"), Format: "codex_toml", ConfigDir: filepath.Join(home, ".codex"), InstructionFile: "AGENTS.md"},
+		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json", ConfigDir: filepath.Join(home, ".pi", "agent"), InstructionFile: "AGENTS.md"},
+		{Name: "Gemini CLI", Path: filepath.Join(home, ".gemini", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini"), InstructionFile: "GEMINI.md"},
+		{Name: "Zed", Path: filepath.Join(zedDir, "settings.json"), Format: "zed", ConfigDir: zedDir, InstructionFile: "AGENTS.md"},
+		{Name: "OpenCode", Path: filepath.Join(home, ".opencode", "settings.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".opencode"), InstructionFile: "AGENTS.md"},
+		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini", "config"), InstructionFile: "AGENTS.md"},
+		{Name: "Aider", Path: filepath.Join(home, ".aider.conf.yml"), Format: "yaml", ConfigDir: filepath.Join(home, ".aider"), InstructionFile: "AIDER.md"},
+		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".kilocode"), InstructionFile: "AGENTS.md"},
+		{Name: "VS Code", Path: filepath.Join(vscodeUserDir, "globalStorage", "mcp.json"), Format: "json", ConfigDir: filepath.Join(vscodeUserDir, "globalStorage"), InstructionFile: "instructions.md"},
+		{Name: "OpenClaw", Path: filepath.Join(home, ".openclaw", "config.json"), Format: "json", ConfigDir: filepath.Join(home, ".openclaw"), InstructionFile: "AGENTS.md"},
+		{Name: "Kiro", Path: filepath.Join(home, ".kiro", "settings", "mcp.json"), Format: "json", ConfigDir: filepath.Join(home, ".kiro", "settings"), InstructionFile: "AGENTS.md"},
+		{Name: "System Instructions", Path: filepath.Join(home, ".config", "pizen", "instructions.md"), Format: "instructions", ConfigDir: filepath.Join(home, ".config", "pizen")},
 	}
 }
 
@@ -61,27 +68,51 @@ func homeDir() string {
 	return h
 }
 
-// vscodeGlobalStorageDir returns the VS Code globalStorage path for the current OS.
-func vscodeGlobalStorageDir(home string) string {
+// zedConfigDir returns the Zed configuration directory for the current OS.
+func zedConfigDir(home string) string {
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage")
+		return filepath.Join(home, "Library", "Application Support", "Zed")
 	case "linux":
-		return filepath.Join(home, ".config", "Code", "User", "globalStorage")
+		return filepath.Join(home, ".config", "zed")
 	case "windows":
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
 			appData = filepath.Join(home, "AppData", "Roaming")
 		}
-		return filepath.Join(appData, "Code", "User", "globalStorage")
+		return filepath.Join(appData, "Zed", "User")
 	default:
-		return filepath.Join(home, ".config", "Code", "User", "globalStorage")
+		return filepath.Join(home, ".config", "zed")
 	}
 }
 
-// Run configures all MCP targets with pizen-lea and pizen-lynx entries.
-func Run() error {
-	// Resolve lea binary path
+// vscodeUserDir returns the VS Code User directory for the current OS.
+func vscodeUserDir(home string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Code", "User")
+	case "linux":
+		return filepath.Join(home, ".config", "Code", "User")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		return filepath.Join(appData, "Code", "User")
+	default:
+		return filepath.Join(home, ".config", "Code", "User")
+	}
+}
+
+// Run configures MCP targets for detected AI coding agents.
+// If opts includes AutoSelectAll=true, all detected targets are configured
+// without user interaction. Otherwise an interactive multi-select prompt is shown.
+func Run(opts ...Options) error {
+	option := Options{}
+	if len(opts) > 0 {
+		option = opts[0]
+	}
+
 	leaPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot resolve lea binary path: %w", err)
@@ -91,20 +122,43 @@ func Run() error {
 		return fmt.Errorf("cannot resolve absolute lea path: %w", err)
 	}
 
-	// Resolve lx binary path: ~/.cargo/bin/lx
 	home := homeDir()
 	lxPath := filepath.Join(home, ".cargo", "bin", "lx")
 
-	// Verify lx exists (optional, don't fail)
 	if _, err := os.Stat(lxPath); err != nil {
 		lxPath = resolveLXFallback()
 	}
 
-	successCount := 0
+	vscodeUserDir := vscodeUserDir(home)
+	allTargets := installTargets(home, vscodeUserDir)
+	detected := detectTargets(allTargets)
 
-	for _, t := range installTargets() {
+	if len(detected) == 0 {
+		fmt.Println("No existing AI agent config directories found; nothing to configure.")
+		return nil
+	}
+
+	fmt.Printf("Detected %d existing AI agent config directories.\n\n", len(detected))
+
+	var selected []target
+	if option.AutoSelectAll {
+		selected = detected
+		fmt.Println("Configuring all detected targets (--yes/--all).")
+	} else {
+		selected, err = selectTargets(detected)
+		if err != nil {
+			return fmt.Errorf("target selection failed: %w", err)
+		}
+	}
+
+	if len(selected) == 0 {
+		fmt.Println("No MCP targets selected.")
+		return nil
+	}
+
+	successCount := 0
+	for _, t := range selected {
 		if err := configureTarget(t, leaPath, lxPath); err != nil {
-			// Silently skip — log to stderr for debugging but don't fail
 			log.Printf("[skip] %s: %v", t.Name, err)
 			continue
 		}
@@ -112,14 +166,177 @@ func Run() error {
 		successCount++
 	}
 
-	// Generate system instruction file
-	if err := generateInstructions(home); err != nil {
-		log.Printf("[skip] instructions: %v", err)
-	}
-	fmt.Printf("  ✓ System Instructions\n")
-
 	fmt.Printf("\nConfigured %d MCP targets successfully.\n", successCount)
 	return nil
+}
+
+// detectTargets returns only targets whose global configuration directory exists.
+func detectTargets(targets []target) []target {
+	detected := make([]target, 0, len(targets))
+	for _, t := range targets {
+		info, err := os.Stat(t.ConfigDir)
+		if err == nil && info.IsDir() {
+			detected = append(detected, t)
+		}
+	}
+	return detected
+}
+
+// validateConfigDir returns an error if the given path does not exist or is not a directory.
+func validateConfigDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config directory %q does not exist", path)
+		}
+		return fmt.Errorf("cannot stat config directory %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config path %q is not a directory", path)
+	}
+	return nil
+}
+
+// selectionItem implements list.Item for the interactive multi-select prompt.
+type selectionItem struct {
+	target   target
+	selected bool
+}
+
+func (i selectionItem) Title() string {
+	state := "[ ]"
+	if i.selected {
+		state = "[x]"
+	}
+	return fmt.Sprintf("%s %s", state, i.target.Name)
+}
+
+func (i selectionItem) Description() string {
+	return i.target.Path
+}
+
+func (i selectionItem) FilterValue() string {
+	return i.target.Name
+}
+
+type selectionModel struct {
+	list list.Model
+}
+
+func newSelectionModel(targets []target) selectionModel {
+	items := make([]list.Item, len(targets))
+	for i, t := range targets {
+		items[i] = selectionItem{target: t}
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = ""
+	l.SetFilteringEnabled(false)
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
+	return selectionModel{list: l}
+}
+
+func (m selectionModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m selectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			return m, tea.Quit
+		case "enter":
+			return m, tea.Quit
+		case " ", "x":
+			m.toggle()
+			return m, nil
+		case "a":
+			m.selectAll()
+			return m, nil
+		case "i":
+			m.clearAll()
+			return m, nil
+		}
+	case tea.WindowSizeMsg:
+		h := msg.Height - 4
+		if h < 0 {
+			h = 0
+		}
+		m.list.SetSize(msg.Width, h)
+	}
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
+}
+
+func (m *selectionModel) toggle() {
+	items := m.list.Items()
+	if len(items) == 0 {
+		return
+	}
+	idx := m.list.GlobalIndex()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	item, ok := items[idx].(selectionItem)
+	if !ok {
+		return
+	}
+	item.selected = !item.selected
+	m.list.SetItem(idx, item)
+}
+
+func (m *selectionModel) selectAll() {
+	for i, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok {
+			continue
+		}
+		it.selected = true
+		m.list.SetItem(i, it)
+	}
+}
+
+func (m *selectionModel) clearAll() {
+	for i, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok {
+			continue
+		}
+		it.selected = false
+		m.list.SetItem(i, it)
+	}
+}
+
+func (m selectionModel) selectedTargets() []target {
+	var selected []target
+	for _, item := range m.list.Items() {
+		it, ok := item.(selectionItem)
+		if !ok || !it.selected {
+			continue
+		}
+		selected = append(selected, it.target)
+	}
+	return selected
+}
+
+func (m selectionModel) View() string {
+	return fmt.Sprintf("Select targets to configure:\n%s\n\n  space/x toggle · a select all · i clear all · enter confirm · ctrl+c cancel", m.list.View())
+}
+
+// selectTargets presents an interactive multi-selection prompt and returns chosen targets.
+func selectTargets(targets []target) ([]target, error) {
+	p := tea.NewProgram(newSelectionModel(targets), tea.WithAltScreen())
+	final, err := p.Run()
+	if err != nil {
+		return nil, err
+	}
+	model, ok := final.(selectionModel)
+	if !ok {
+		return nil, fmt.Errorf("unexpected prompt result type")
+	}
+	return model.selectedTargets(), nil
 }
 
 // resolveLXFallback tries to find lx via PATH as a fallback.
@@ -133,30 +350,41 @@ func resolveLXFallback() string {
 
 // configureTarget injects MCP entries into a single target configuration file.
 func configureTarget(t target, leaPath, lxPath string) error {
-	parent := filepath.Dir(t.Path)
-	if _, err := os.Stat(parent); os.IsNotExist(err) {
-		// Create parent directory for PizenLabs Shared MCP and other writable targets
-		if t.Name == "PizenLabs Shared MCP" {
-			if err := os.MkdirAll(parent, 0755); err != nil {
-				return fmt.Errorf("cannot create parent directory %q: %w", parent, err)
-			}
-		} else {
-			return fmt.Errorf("parent directory %q does not exist", parent)
-		}
+	if err := validateConfigDir(t.ConfigDir); err != nil {
+		return err
 	}
 
+	var err error
 	switch t.Format {
 	case "json":
-		return injectJSON(t.Path, leaPath, lxPath)
+		err = injectJSON(t.Path, leaPath, lxPath)
 	case "opencode":
-		return injectOpenCodeJSON(t.Path, leaPath, lxPath)
+		err = injectOpenCodeJSON(t.Path, leaPath, lxPath)
+	case "zed":
+		err = injectZedJSON(t.Path, leaPath, lxPath)
 	case "yaml":
-		return injectYAML(t.Path, leaPath, lxPath)
+		err = injectYAML(t.Path, leaPath, lxPath)
 	case "toml":
-		return injectTOML(t.Path, leaPath, lxPath)
+		err = injectTOML(t.Path, leaPath, lxPath)
+	case "codex_toml":
+		err = injectCodexTOML(t.Path, leaPath, lxPath)
+	case "instructions":
+		err = writeInstructions(t.Path)
 	default:
 		return fmt.Errorf("unsupported format: %s", t.Format)
 	}
+
+	if err != nil {
+		return err
+	}
+
+	if t.InstructionFile != "" {
+		if err := writeInstructionsFile(t); err != nil {
+			log.Printf("[warning] failed to write instructions for %s: %v", t.Name, err)
+		}
+	}
+
+	return nil
 }
 
 // injectJSON reads or creates a JSON file and injects pizen entries under mcpServers.
@@ -170,11 +398,6 @@ func injectJSON(path, leaPath, lxPath string) error {
 		}
 	} else {
 		raw = make(map[string]any)
-	}
-
-	// Handle Zed IDE format (mcp at root level, not mcpServers)
-	if strings.Contains(path, ".zed") || strings.Contains(path, "zed") {
-		return injectZedJSON(raw, path, leaPath, lxPath)
 	}
 
 	// Standard mcpServers injection
@@ -192,11 +415,24 @@ func injectJSON(path, leaPath, lxPath string) error {
 	servers["pizen-lynx"] = lxEntry
 	raw["mcpServers"] = servers
 
+	injectHooksJSON(raw, leaPath)
+
 	return writeJSON(path, raw)
 }
 
 // injectZedJSON handles Zed IDE's mcp config format under root "mcp" key.
-func injectZedJSON(raw map[string]any, path, leaPath, lxPath string) error {
+func injectZedJSON(path, leaPath, lxPath string) error {
+	data := readOrEmpty(path)
+
+	var raw map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("unmarshal error: %w", err)
+		}
+	} else {
+		raw = make(map[string]any)
+	}
+
 	mcp, ok := raw["mcp"].(map[string]any)
 	if !ok || mcp == nil {
 		mcp = make(map[string]any)
@@ -207,10 +443,11 @@ func injectZedJSON(raw map[string]any, path, leaPath, lxPath string) error {
 		"HOME": os.Getenv("HOME"),
 	}
 
-	// Zed format: "pizen-lea": { "command": "...", "args": ["mcp"] }
 	mcp["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
 	mcp["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
 	raw["mcp"] = mcp
+
+	injectHooksJSON(raw, leaPath)
 
 	return writeJSON(path, raw)
 }
@@ -246,6 +483,8 @@ func injectOpenCodeJSON(path, leaPath, lxPath string) error {
 	}
 	raw["mcp"] = mcp
 
+	injectHooksJSON(raw, leaPath)
+
 	return writeJSON(path, raw)
 }
 
@@ -276,6 +515,8 @@ func injectYAML(path, leaPath, lxPath string) error {
 	mcpList = upsertYAMLList(mcpList, "pizen-lea", leaPath)
 	mcpList = upsertYAMLList(mcpList, "pizen-lynx", lxPath)
 	raw["mcp"] = mcpList
+
+	injectHooksYAML(raw, leaPath)
 
 	return writeYAML(path, raw)
 }
@@ -325,6 +566,8 @@ func injectTOML(path, leaPath, lxPath string) error {
 	tools = upsertTOMLTool(tools, "pizen-lynx", lxPath, []string{"mcp"})
 	raw["external_tools"] = tools
 
+	injectHooksTOML(raw, leaPath)
+
 	return writeTOML(path, raw)
 }
 
@@ -348,6 +591,38 @@ func upsertTOMLTool(list []any, name, command string, args []string) []any {
 		"args":    args,
 	})
 	return list
+}
+
+// injectCodexTOML reads or creates a TOML file and injects pizen entries
+// using the Codex CLI format: [mcpServers] key with inline table values.
+func injectCodexTOML(path, leaPath, lxPath string) error {
+	data := readOrEmpty(path)
+
+	var raw map[string]any
+	if len(data) > 0 {
+		if err := toml.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("unmarshal error: %w", err)
+		}
+	} else {
+		raw = make(map[string]any)
+	}
+
+	servers, ok := raw["mcpServers"].(map[string]any)
+	if !ok || servers == nil {
+		servers = make(map[string]any)
+	}
+
+	env := map[string]string{
+		"PATH": os.Getenv("PATH"),
+		"HOME": os.Getenv("HOME"),
+	}
+	servers["pizen-lea"] = MCPEntry{Command: leaPath, Args: []string{"mcp"}, Env: env}
+	servers["pizen-lynx"] = MCPEntry{Command: lxPath, Args: []string{"mcp"}, Env: env}
+	raw["mcpServers"] = servers
+
+	injectHooksTOML(raw, leaPath)
+
+	return writeTOML(path, raw)
 }
 
 // readOrEmpty reads a file, returning nil if it doesn't exist.
@@ -386,13 +661,8 @@ func writeTOML(path string, v map[string]any) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// generateInstructions creates the shared instruction file at ~/.config/pizen/instructions.md.
-func generateInstructions(home string) error {
-	pizenDir := filepath.Join(home, ".config", "pizen")
-	if err := os.MkdirAll(pizenDir, 0755); err != nil {
-		return fmt.Errorf("cannot create pizen config dir: %w", err)
-	}
-
+// writeInstructions writes the global Pizen ecosystem instructions file.
+func writeInstructions(path string) error {
 	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
 
 CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
@@ -401,47 +671,193 @@ first to discover the exact Symbol ID. DO NOT guess the code structure.
 Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
 flow, or neighbors) to map structural reasoning and blast radius.
 `
-	path := filepath.Join(pizenDir, "instructions.md")
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return fmt.Errorf("cannot write instructions: %w", err)
-	}
-
-	// Also try to inject into .clinerules / .cursorrules in common project directories.
-	// This is best-effort; failures are silently ignored.
-	_ = injectClinerules(home)
-
-	return nil
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
-// injectClinerules tries to add a reference to the instructions file in detected
-// .clinerules or .cursorrules files under common project directories.
-func injectClinerules(home string) error {
-	rulesContent := "\n# PizenLabs Ecosystem\nSee ~/.config/pizen/instructions.md for dual-tool orchestration instructions.\n"
+func writeInstructionsFile(t target) error {
+	if t.InstructionFile == "" {
+		return nil
+	}
+	// Make sure config directory exists
+	if err := os.MkdirAll(t.ConfigDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(t.ConfigDir, t.InstructionFile)
+	content := `# PizenLabs Ecosystem — Dual-Tool Orchestration
 
-	candidates := []string{
-		filepath.Join(home, ".clinerules"),
-		filepath.Join(home, ".cursorrules"),
-		filepath.Join(home, ".codex", "rules.md"),
+CRITICAL: For code-related queries, ALWAYS run pizen-lynx (via search or resolve)
+first to discover the exact Symbol ID. DO NOT guess the code structure.
+
+Once the Symbol ID is retrieved, immediately pass it to pizen-lea (via impact,
+flow, or neighbors) to map structural reasoning and blast radius.
+`
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func injectHooksJSON(raw map[string]any, leaPath string) {
+	hooks, ok := raw["hooks"].(map[string]any)
+	if !ok || hooks == nil {
+		hooks = make(map[string]any)
 	}
 
-	for _, path := range candidates {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(data), "pizen-lynx") || strings.Contains(string(data), "pizen-lea") {
-			continue // already injected
-		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			continue
-		}
-		_, _ = f.WriteString(rulesContent)
-		_ = f.Close()
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		preToolUse = []any{}
 	}
 
-	return nil
+	hookCmd := leaPath + " hook pre-tool"
+	found := false
+	for _, item := range preToolUse {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := entry["matcher"].(string)
+		if matcher == "*" {
+			subHooks, ok := entry["hooks"].([]any)
+			if ok {
+				for _, sh := range subHooks {
+					shMap, ok := sh.(map[string]any)
+					if ok {
+						cmd, _ := shMap["command"].(string)
+						if strings.Contains(cmd, "lea hook") {
+							shMap["command"] = hookCmd
+							found = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !found {
+		newHook := map[string]any{
+			"matcher": "*",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": hookCmd,
+				},
+			},
+		}
+		preToolUse = append(preToolUse, newHook)
+	}
+
+	hooks["PreToolUse"] = preToolUse
+	raw["hooks"] = hooks
+}
+
+func injectHooksTOML(raw map[string]any, leaPath string) {
+	hookCmd := leaPath + " hook pre-tool"
+	hooks, ok := raw["hooks"].(map[string]any)
+	if !ok || hooks == nil {
+		hooks = make(map[string]any)
+	}
+
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		preToolUse = []any{}
+	}
+
+	found := false
+	for i, item := range preToolUse {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := entry["matcher"].(string)
+		if matcher == "*" {
+			subHooks, ok := entry["hooks"].([]any)
+			if ok {
+				for j, sh := range subHooks {
+					shMap, ok := sh.(map[string]any)
+					if ok {
+						cmd, _ := shMap["command"].(string)
+						if strings.Contains(cmd, "lea hook") {
+							shMap["command"] = hookCmd
+							subHooks[j] = shMap
+							found = true
+							break
+						}
+					}
+				}
+				entry["hooks"] = subHooks
+				preToolUse[i] = entry
+			}
+		}
+	}
+
+	if !found {
+		newHook := map[string]any{
+			"matcher": "*",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": hookCmd,
+				},
+			},
+		}
+		preToolUse = append(preToolUse, newHook)
+	}
+
+	hooks["PreToolUse"] = preToolUse
+	raw["hooks"] = hooks
+}
+
+func injectHooksYAML(raw map[string]any, leaPath string) {
+	hookCmd := leaPath + " hook pre-tool"
+	hooks, ok := raw["hooks"].(map[string]any)
+	if !ok || hooks == nil {
+		hooks = make(map[string]any)
+	}
+
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		preToolUse = []any{}
+	}
+
+	found := false
+	for i, item := range preToolUse {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := entry["matcher"].(string)
+		if matcher == "*" {
+			subHooks, ok := entry["hooks"].([]any)
+			if ok {
+				for j, sh := range subHooks {
+					shMap, ok := sh.(map[string]any)
+					if ok {
+						cmd, _ := shMap["command"].(string)
+						if strings.Contains(cmd, "lea hook") {
+							shMap["command"] = hookCmd
+							subHooks[j] = shMap
+							found = true
+							break
+						}
+					}
+				}
+				entry["hooks"] = subHooks
+				preToolUse[i] = entry
+			}
+		}
+	}
+
+	if !found {
+		newHook := map[string]any{
+			"matcher": "*",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": hookCmd,
+				},
+			},
+		}
+		preToolUse = append(preToolUse, newHook)
+	}
+
+	hooks["PreToolUse"] = preToolUse
+	raw["hooks"] = hooks
 }

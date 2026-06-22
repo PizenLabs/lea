@@ -4,9 +4,12 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	aictx "github.com/PizenLabs/lea/internal/ai/context"
 	"github.com/PizenLabs/lea/internal/architecture"
@@ -85,9 +88,21 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	// mcp-golang v0.16.1 Serve() is non-blocking — the read-loop goroutine
-	// has already started.  Block forever so the process stays alive until
-	// opencode kills the subprocess.
+	// Set up monitored signal channel for graceful shutdown.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, os.Interrupt)
+
+	// Launch background goroutine to intercept the signal.
+	go func() {
+		<-sigChan
+		// Cleanly close the store connections.
+		if s.store != nil {
+			_ = s.store.Close()
+		}
+		os.Exit(0)
+	}()
+
+	// Block until the process receives a termination signal.
 	select {}
 }
 

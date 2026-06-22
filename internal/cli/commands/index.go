@@ -418,15 +418,12 @@ func resolveInterfaceImplementations(ctx context.Context, store contracts.Store)
 
 	// Build map: typeID -> set of methodIDs belonging to it
 	typeMethods := make(map[string]map[string]bool)
-	// Build reverse map: methodID -> belongs to typeID
-	methodOwner := make(map[string]string)
 
 	for _, e := range belongsToEdges {
 		// BELONGS_TO goes from method -> type (or type -> package, struct -> package)
 		// We need edges from method to type
 		// Check if FromID looks like a method ID (starts with "method:")
 		if strings.HasPrefix(e.FromID, "method:") {
-			methodOwner[e.FromID] = e.ToID
 			if typeMethods[e.ToID] == nil {
 				typeMethods[e.ToID] = make(map[string]bool)
 			}
@@ -472,7 +469,8 @@ func resolveInterfaceImplementations(ctx context.Context, store contracts.Store)
 	}
 
 	// Count new edges for reporting
-	newEdges := 0
+	var newEdges []*graph.Edge
+	newMethodEdges := 0
 
 	// For each interface, find structs whose method set is a superset of the interface method set
 	for ifaceID, ifaceMethods := range interfaceMethods {
@@ -492,11 +490,7 @@ func resolveInterfaceImplementations(ctx context.Context, store contracts.Store)
 					ToID:   ifaceID,
 					Type:   graph.EdgeImplements,
 				}
-				if err := store.SaveEdge(ctx, edge); err != nil {
-					return fmt.Errorf("failed to save IMPLEMENTS edge from %s to %s: %w", structID, ifaceID, err)
-				}
-				newEdges++
-				fmt.Printf("  IMPLEMENTS: %s -> %s\n", structID, ifaceID)
+				newEdges = append(newEdges, edge)
 
 				// Pass 2: Explicit method-to-interface linking (Issue 1 fix)
 				// Create IMPLEMENTS_METHOD edges at the method granularity
@@ -523,18 +517,20 @@ func resolveInterfaceImplementations(ctx context.Context, store contracts.Store)
 							ToID:   ifaceMethodID,
 							Type:   graph.EdgeImplementsMethod,
 						}
-						if err := store.SaveEdge(ctx, methodEdge); err != nil {
-							return fmt.Errorf("failed to save IMPLEMENTS_METHOD edge from %s to %s: %w", concreteMethodID, ifaceMethodID, err)
-						}
-						fmt.Printf("  IMPLEMENTS_METHOD: %s -> %s\n", concreteMethodID, ifaceMethodID)
+						newEdges = append(newEdges, methodEdge)
+						newMethodEdges++
 					}
 				}
 			}
 		}
 	}
 
-	if newEdges > 0 {
-		fmt.Printf("Resolved %d interface implementation(s).\n", newEdges)
+	if len(newEdges) > 0 {
+		// Batch all new edges in a single transaction
+		if err := store.SaveGraph(ctx, nil, newEdges); err != nil {
+			return fmt.Errorf("failed to save interface implementation edges: %w", err)
+		}
+		fmt.Printf("Resolved %d interface implementation(s) and %d method edge(s).\n", len(newEdges)-newMethodEdges, newMethodEdges)
 	}
 
 	return nil

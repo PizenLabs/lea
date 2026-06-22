@@ -57,18 +57,29 @@ var mcpCmd = &cobra.Command{
 	},
 }
 
+var (
+	mcpInstallYes bool
+	mcpInstallAll bool
+)
+
 var mcpInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Configure MCP entries for lea and lx across AI tools",
 	Long: `Installs MCP server entries (pizen-lea and pizen-lynx) into the configuration
-files of supported AI coding agents: Claude Code, VS Code (Cline/Roo Code/Codex CLI),
-OpenCode, Pi, Zed, Gemini CLI, OpenClaw, Aider, Antigravity, Kiro, and KiloCode.`,
+files of supported AI coding agents: Claude Code, Codex CLI, Gemini CLI, Zed,
+OpenCode, Antigravity, Aider, KiloCode, VS Code, OpenClaw, Kiro, and Pi.
+
+Only agents whose global/home configuration directory exists on the system are
+detected. Use --yes or --all to configure all detected agents without prompting.`,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		return install.Run()
+		auto := mcpInstallYes || mcpInstallAll
+		return install.Run(install.Options{AutoSelectAll: auto})
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpInstallCmd)
+	mcpInstallCmd.Flags().BoolVarP(&mcpInstallYes, "yes", "y", false, "configure all detected agents without prompting")
+	mcpInstallCmd.Flags().BoolVar(&mcpInstallAll, "all", false, "configure all detected agents without prompting")
 }
