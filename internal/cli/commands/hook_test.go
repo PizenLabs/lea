@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// Mockable os.Exit for testing
-var osExitOriginal = os.Exit
-var osExit = os.Exit
-
 func TestHookPreToolInvalidSymbol(t *testing.T) {
 	// Prepare JSON input with a non-existent symbol
 	jsonInput := []byte(`{"tool_name":"pizen-lea__impact","tool_input":{"symbol":"nonexistent_symbol"}}`)
