@@ -113,11 +113,11 @@ var hookPreToolCmd = &cobra.Command{
 		}
 
 		dbPath := filepath.Join(leaDir, "graph.db")
-store, err := sqlite.NewStore(dbPath)
+		store, err := sqlite.NewStore(dbPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening store: %v\n", err)
 			os.Exit(2)
-			}
+		}
 		defer func() { _ = store.Close() }()
 
 		ctx := context.Background()
