@@ -362,6 +362,11 @@ def main():
         "lea_trace_calls",
         "lea_trace_execution_path",
         "lea_find_architecture_violations",
+        "lea_lea_view_symbol_ast",
+        "lea_lea_find_neighbors",
+        "lea_lea_trace_calls",
+        "lea_lea_trace_execution_path",
+        "lea_lea_find_architecture_violations",
     ])
 
     lx_tools = test_native_registration("lx", LX_BIN, [
