@@ -106,19 +106,27 @@ func (s *Server) Start() error {
 	select {}
 }
 
-// registerTools registers every MCP tool exposed by lea.
+// registerTools registers every MCP tool exposed by lea, plus aliased
+// double-prefix variants for OpenCode transport compatibility.
 func (s *Server) registerTools(server *mcp_golang.Server) error {
-	tools := []func(*mcp_golang.Server) error{
-		s.registerGetSymbolContextTool,
-		s.registerFindNeighborsTool,
-		s.registerTraceCallsTool,
-		s.registerTraceExecutionPathTool,
-		s.registerArchitectureViolationsTool,
+	type registration struct {
+		register func(*mcp_golang.Server, string) error
+		names    []string
 	}
 
-	for _, register := range tools {
-		if err := register(server); err != nil {
-			return err
+	regs := []registration{
+		{s.registerGetSymbolContext, []string{"lea_view_symbol_ast", "lea_lea_view_symbol_ast"}},
+		{s.registerFindNeighbors, []string{"lea_find_neighbors", "lea_lea_find_neighbors"}},
+		{s.registerTraceCalls, []string{"lea_trace_calls", "lea_lea_trace_calls"}},
+		{s.registerTraceExecutionPath, []string{"lea_trace_execution_path", "lea_lea_trace_execution_path"}},
+		{s.registerArchitectureViolations, []string{"lea_find_architecture_violations", "lea_lea_find_architecture_violations"}},
+	}
+
+	for _, r := range regs {
+		for _, name := range r.names {
+			if err := r.register(server, name); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -129,10 +137,10 @@ func (s *Server) registerTools(server *mcp_golang.Server) error {
 // Tool Registration
 // -----------------------------------------------------------------------------
 
-// registerGetSymbolContextTool registers the symbol context compiler tool.
-func (s *Server) registerGetSymbolContextTool(server *mcp_golang.Server) error {
+// registerGetSymbolContext creates a tool registration closure for the given name.
+func (s *Server) registerGetSymbolContext(server *mcp_golang.Server, toolName string) error {
 	return server.RegisterTool(
-		"lea_view_symbol_ast",
+		toolName,
 		"Generates AI-optimized markdown context for a symbol",
 		func(
 			ctx context.Context,
@@ -149,10 +157,10 @@ func (s *Server) registerGetSymbolContextTool(server *mcp_golang.Server) error {
 	)
 }
 
-// registerFindNeighborsTool registers the structural neighbor lookup tool.
-func (s *Server) registerFindNeighborsTool(server *mcp_golang.Server) error {
+// registerFindNeighbors creates a tool registration closure for the given name.
+func (s *Server) registerFindNeighbors(server *mcp_golang.Server, toolName string) error {
 	return server.RegisterTool(
-		"lea_find_neighbors",
+		toolName,
 		"Finds symbols directly connected to a symbol",
 		func(
 			ctx context.Context,
@@ -169,10 +177,10 @@ func (s *Server) registerFindNeighborsTool(server *mcp_golang.Server) error {
 	)
 }
 
-// registerTraceCallsTool registers the recursive call graph tracing tool.
-func (s *Server) registerTraceCallsTool(server *mcp_golang.Server) error {
+// registerTraceCalls creates a tool registration closure for the given name.
+func (s *Server) registerTraceCalls(server *mcp_golang.Server, toolName string) error {
 	return server.RegisterTool(
-		"lea_trace_calls",
+		toolName,
 		"Traces the call graph starting from a symbol",
 		func(
 			ctx context.Context,
@@ -202,10 +210,10 @@ func (s *Server) registerTraceCallsTool(server *mcp_golang.Server) error {
 	)
 }
 
-// registerTraceExecutionPathTool registers the ordered execution flow tool.
-func (s *Server) registerTraceExecutionPathTool(server *mcp_golang.Server) error {
+// registerTraceExecutionPath creates a tool registration closure for the given name.
+func (s *Server) registerTraceExecutionPath(server *mcp_golang.Server, toolName string) error {
 	return server.RegisterTool(
-		"lea_trace_execution_path",
+		toolName,
 		"Returns ordered control-flow traversal for a symbol",
 		func(
 			ctx context.Context,
@@ -222,10 +230,11 @@ func (s *Server) registerTraceExecutionPathTool(server *mcp_golang.Server) error
 	)
 }
 
-// registerArchitectureViolationsTool registers the architecture validation tool.
-func (s *Server) registerArchitectureViolationsTool(server *mcp_golang.Server) error {
+// registerArchitectureViolations creates a tool registration closure for the
+// given name.
+func (s *Server) registerArchitectureViolations(server *mcp_golang.Server, toolName string) error {
 	return server.RegisterTool(
-		"lea_find_architecture_violations",
+		toolName,
 		"Detects architecture boundary violations",
 		func(
 			ctx context.Context,
