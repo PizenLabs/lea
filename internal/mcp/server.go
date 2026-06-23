@@ -132,7 +132,7 @@ func (s *Server) registerTools(server *mcp_golang.Server) error {
 // registerGetSymbolContextTool registers the symbol context compiler tool.
 func (s *Server) registerGetSymbolContextTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"view_symbol_ast",
+		"lea_view_symbol_ast",
 		"Generates AI-optimized markdown context for a symbol",
 		func(
 			ctx context.Context,
@@ -152,7 +152,7 @@ func (s *Server) registerGetSymbolContextTool(server *mcp_golang.Server) error {
 // registerFindNeighborsTool registers the structural neighbor lookup tool.
 func (s *Server) registerFindNeighborsTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"find_neighbors",
+		"lea_find_neighbors",
 		"Finds symbols directly connected to a symbol",
 		func(
 			ctx context.Context,
@@ -172,7 +172,7 @@ func (s *Server) registerFindNeighborsTool(server *mcp_golang.Server) error {
 // registerTraceCallsTool registers the recursive call graph tracing tool.
 func (s *Server) registerTraceCallsTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"trace_calls",
+		"lea_trace_calls",
 		"Traces the call graph starting from a symbol",
 		func(
 			ctx context.Context,
@@ -205,7 +205,7 @@ func (s *Server) registerTraceCallsTool(server *mcp_golang.Server) error {
 // registerTraceExecutionPathTool registers the ordered execution flow tool.
 func (s *Server) registerTraceExecutionPathTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"trace_execution_path",
+		"lea_trace_execution_path",
 		"Returns ordered control-flow traversal for a symbol",
 		func(
 			ctx context.Context,
@@ -225,7 +225,7 @@ func (s *Server) registerTraceExecutionPathTool(server *mcp_golang.Server) error
 // registerArchitectureViolationsTool registers the architecture validation tool.
 func (s *Server) registerArchitectureViolationsTool(server *mcp_golang.Server) error {
 	return server.RegisterTool(
-		"find_architecture_violations",
+		"lea_find_architecture_violations",
 		"Detects architecture boundary violations",
 		func(
 			ctx context.Context,

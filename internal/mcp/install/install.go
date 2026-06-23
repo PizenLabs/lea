@@ -665,10 +665,10 @@ func writeTOML(path string, v map[string]any) error {
 func writeInstructions(path string) error {
 	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
 
-This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
+This repository utilizes custom AST-aware and graph-indexed tools (lynx_search_graph, lynx_resolve_symbol, lea_view_symbol_ast, lea_trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
 
 ## 1. Tool Priority Queue (Strict Compliance)
-1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
+1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke lynx_search_graph and lea_view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
 2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
 
 ## 2. Enforcement
@@ -688,10 +688,10 @@ func writeInstructionsFile(t target) error {
 	path := filepath.Join(t.ConfigDir, t.InstructionFile)
 	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
 
-This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
+This repository utilizes custom AST-aware and graph-indexed tools (lynx_search_graph, lynx_resolve_symbol, lea_view_symbol_ast, lea_trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
 
 ## 1. Tool Priority Queue (Strict Compliance)
-1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
+1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke lynx_search_graph and lea_view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
 2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
 
 ## 2. Enforcement

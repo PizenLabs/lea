@@ -72,7 +72,7 @@ var hookPreToolCmd = &cobra.Command{
 			isLeaTool = true
 		} else {
 			// Fallback: check if the tool name matches one of our MCP tools
-			leaTools := []string{"impact", "flow", "neighbors", "violations", "symbols", "view_symbol_ast", "trace_execution_path"}
+			leaTools := []string{"impact", "flow", "neighbors", "violations", "symbols", "lea_view_symbol_ast", "lea_trace_execution_path", "lea_find_neighbors", "lea_trace_calls", "lea_find_architecture_violations"}
 			for _, t := range leaTools {
 				if lowerName == t || strings.HasSuffix(lowerName, "__"+t) || strings.HasSuffix(lowerName, "/"+t) {
 					isLeaTool = true
