@@ -48,7 +48,7 @@ func installTargets(home, vscodeUserDir string) []target {
 		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json", ConfigDir: filepath.Join(home, ".pi", "agent"), InstructionFile: "AGENTS.md"},
 		{Name: "Gemini CLI", Path: filepath.Join(home, ".gemini", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini"), InstructionFile: "GEMINI.md"},
 		{Name: "Zed", Path: filepath.Join(zedDir, "settings.json"), Format: "zed", ConfigDir: zedDir, InstructionFile: "AGENTS.md"},
-		{Name: "OpenCode", Path: filepath.Join(home, ".config", "opencode", "settings.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".config", "opencode"), InstructionFile: "AGENTS.md"},
+		{Name: "OpenCode", Path: filepath.Join(home, ".config", "opencode", "opencode.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".config", "opencode"), InstructionFile: "AGENTS.md"},
 		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini", "config"), InstructionFile: "AGENTS.md"},
 		{Name: "Aider", Path: filepath.Join(home, ".aider.conf.yml"), Format: "yaml", ConfigDir: filepath.Join(home, ".aider"), InstructionFile: "AIDER.md"},
 		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".kilocode"), InstructionFile: "AGENTS.md"},
@@ -469,12 +469,12 @@ func injectOpenCodeJSON(path, leaPath, lxPath string) error {
 		mcp = make(map[string]any)
 	}
 
-	mcp["pizen-lea"] = map[string]any{
+	mcp["lea"] = map[string]any{
 		"enabled": true,
 		"type":    "local",
 		"command": []any{leaPath, "mcp"},
 	}
-	mcp["pizen-lynx"] = map[string]any{
+	mcp["lynx"] = map[string]any{
 		"enabled": true,
 		"type":    "local",
 		"command": []any{lxPath, "mcp"},
