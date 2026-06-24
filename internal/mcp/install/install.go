@@ -48,7 +48,7 @@ func installTargets(home, vscodeUserDir string) []target {
 		{Name: "Pi Coding Agents", Path: filepath.Join(home, ".pi", "agent", "mcp.json"), Format: "json", ConfigDir: filepath.Join(home, ".pi", "agent"), InstructionFile: "AGENTS.md"},
 		{Name: "Gemini CLI", Path: filepath.Join(home, ".gemini", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini"), InstructionFile: "GEMINI.md"},
 		{Name: "Zed", Path: filepath.Join(zedDir, "settings.json"), Format: "zed", ConfigDir: zedDir, InstructionFile: "AGENTS.md"},
-		{Name: "OpenCode", Path: filepath.Join(home, ".opencode", "settings.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".opencode"), InstructionFile: "AGENTS.md"},
+		{Name: "OpenCode", Path: filepath.Join(home, ".config", "opencode", "opencode.json"), Format: "opencode", ConfigDir: filepath.Join(home, ".config", "opencode"), InstructionFile: "AGENTS.md"},
 		{Name: "Antigravity", Path: filepath.Join(home, ".gemini", "config", "mcp_config.json"), Format: "json", ConfigDir: filepath.Join(home, ".gemini", "config"), InstructionFile: "AGENTS.md"},
 		{Name: "Aider", Path: filepath.Join(home, ".aider.conf.yml"), Format: "yaml", ConfigDir: filepath.Join(home, ".aider"), InstructionFile: "AIDER.md"},
 		{Name: "KiloCode", Path: filepath.Join(home, ".kilocode", "settings.json"), Format: "json", ConfigDir: filepath.Join(home, ".kilocode"), InstructionFile: "AGENTS.md"},
@@ -129,8 +129,8 @@ func Run(opts ...Options) error {
 		lxPath = resolveLXFallback()
 	}
 
-	vscodeUserDir := vscodeUserDir(home)
-	allTargets := installTargets(home, vscodeUserDir)
+	vscDir := vscodeUserDir(home)
+	allTargets := installTargets(home, vscDir)
 	detected := detectTargets(allTargets)
 
 	if len(detected) == 0 {
@@ -343,7 +343,7 @@ func selectTargets(targets []target) ([]target, error) {
 func resolveLXFallback() string {
 	p, err := exec.LookPath("lx")
 	if err != nil {
-		return filepath.Join(homeDir(), ".cargo", "bin", "lx") // return default even if missing
+		return filepath.Join(homeDir(), ".cargo", "bin", "lx")
 	}
 	return p
 }
@@ -369,7 +369,7 @@ func configureTarget(t target, leaPath, lxPath string) error {
 	case "codex_toml":
 		err = injectCodexTOML(t.Path, leaPath, lxPath)
 	case "instructions":
-		err = writeInstructions(t.Path)
+		return writeInstructions(t.Path)
 	default:
 		return fmt.Errorf("unsupported format: %s", t.Format)
 	}
@@ -400,7 +400,6 @@ func injectJSON(path, leaPath, lxPath string) error {
 		raw = make(map[string]any)
 	}
 
-	// Standard mcpServers injection
 	servers, ok := raw["mcpServers"].(map[string]any)
 	if !ok || servers == nil {
 		servers = make(map[string]any)
@@ -453,7 +452,6 @@ func injectZedJSON(path, leaPath, lxPath string) error {
 }
 
 // injectOpenCodeJSON handles OpenCode's MCP config format under root "mcp" key.
-// OpenCode uses: { "enabled": true, "type": "local", "command": ["path", "mcp"] }
 func injectOpenCodeJSON(path, leaPath, lxPath string) error {
 	data := readOrEmpty(path)
 
@@ -471,19 +469,17 @@ func injectOpenCodeJSON(path, leaPath, lxPath string) error {
 		mcp = make(map[string]any)
 	}
 
-	mcp["pizen-lea"] = map[string]any{
+	mcp["lea"] = map[string]any{
 		"enabled": true,
 		"type":    "local",
 		"command": []any{leaPath, "mcp"},
 	}
-	mcp["pizen-lynx"] = map[string]any{
+	mcp["lynx"] = map[string]any{
 		"enabled": true,
 		"type":    "local",
 		"command": []any{lxPath, "mcp"},
 	}
 	raw["mcp"] = mcp
-
-	injectHooksJSON(raw, leaPath)
 
 	return writeJSON(path, raw)
 }
@@ -501,12 +497,6 @@ func injectYAML(path, leaPath, lxPath string) error {
 		raw = make(map[string]any)
 	}
 
-	// YAML mcp list format for aider:
-	// mcp:
-	//   - name: pizen-lea
-	//     cmd: <path> mcp
-	//   - name: pizen-lynx
-	//     cmd: <path> mcp
 	mcpList, ok := raw["mcp"].([]any)
 	if !ok {
 		mcpList = []any{}
@@ -555,8 +545,6 @@ func injectTOML(path, leaPath, lxPath string) error {
 		raw = make(map[string]any)
 	}
 
-	// Kiro Agent TOML format expects external tools under [[tool]] or similar.
-	// Inject under a generic `[[external_tools]]` array or merge into existing.
 	tools, ok := raw["external_tools"].([]any)
 	if !ok {
 		tools = []any{}
@@ -593,8 +581,7 @@ func upsertTOMLTool(list []any, name, command string, args []string) []any {
 	return list
 }
 
-// injectCodexTOML reads or creates a TOML file and injects pizen entries
-// using the Codex CLI format: [mcpServers] key with inline table values.
+// injectCodexTOML reads or creates a TOML file and injects pizen entries.
 func injectCodexTOML(path, leaPath, lxPath string) error {
 	data := readOrEmpty(path)
 
@@ -663,17 +650,38 @@ func writeTOML(path string, v map[string]any) error {
 
 // writeInstructions writes the global Pizen ecosystem instructions file.
 func writeInstructions(path string) error {
-	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
-
-This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
-
+	rawContent := `<!-- lea-lx-mcp:start -->
 ## 1. Tool Priority Queue (Strict Compliance)
-1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
-2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
+1. **FIRST PRIORITY:** Always invoke the custom AST-aware commands directly when searching for code or viewing context.
+   * Code Search: Use [BT]lynx_search_graph[BT].
+   * Symbol Definition: Use [BT]lynx_resolve_symbol[BT].
+   * AST Inspection: Use [BT]lea_view_symbol_ast[BT].
 
-## 2. Enforcement
-Before executing any tool call, verify that you are leveraging the custom AST-aware commands first. Guessing file paths via generic tools before attempting a structured lookup is penalized.
+2. **LAST RESORT FALLBACK:** If (and only if) the primary tools above return connection errors, a method-not-found exception, or an empty index result, you are strictly allowed to fallback to grep or glob to locate the plain-text references.
+
+## 2. Strict Parameter Schema Mapping & Identifier Rules
+* **[BT]lea_view_symbol_ast[BT]**: Requires [BT]symbol_id[BT] parameter.
+  - For Functions: {"symbol_id": "func:package/path:FunctionName"}
+  - For Structs/Types: {"symbol_id": "type:package/path:StructName"}
+  - For Methods: {"symbol_id": "func:package/path:ReceiverStruct.MethodName"}
+
+* **[BT]lynx_search_graph[BT]**: Requires [BT]query[BT] parameter.
+  - Example: {"query": "userRepository"}
+
+* **[BT]lynx_resolve_symbol[BT]**: Requires [BT]name[BT] parameter.
+  - Example: {"name": "userRepository"}
+
+## 3. Expected Thinking Pattern & Examples
+When tasked to inspect or locate a struct, type, or function without an explicit package path, follow this internal reflection loop to save tokens and avoid failures:
+1. **Bad Thought:** "Let's run grep, ripgrep, or glob to find userRepository." -> (STRICT VIOLATION)
+2. **Good Thought:** "I must look up the structural definition first. I will call [BT]lynx_lynx_resolve_symbol[BT] with name='userRepository' or [BT]lynx_lynx_search_graph[BT] with query='userRepository' to discover its exact Go package path."
+3. **Execution:** Once the package path is resolved (e.g., [BT]internal/user/impl[BT]), I will construct the canonical [BT]symbol_id[BT] (e.g., [BT]type:internal/user/impl:userRepository[BT]) and invoke [BT]lea_lea_view_symbol_ast[BT] directly.
+
+## CRITICAL NOTE ON GO SYMBOLS:
+The second component in the [BT]symbol_id[BT] MUST ALWAYS be the exact Go package path (e.g., internal/user/impl), NEVER a standard Go filename or physical file path. Using file paths will result in immediate "symbol not found" errors.
+<!-- lea-lx-mcp:end -->
 `
+	content := strings.ReplaceAll(rawContent, "[BT]", "`")
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
@@ -681,22 +689,43 @@ func writeInstructionsFile(t target) error {
 	if t.InstructionFile == "" {
 		return nil
 	}
-	// Make sure config directory exists
 	if err := os.MkdirAll(t.ConfigDir, 0755); err != nil {
 		return err
 	}
 	path := filepath.Join(t.ConfigDir, t.InstructionFile)
-	content := `#  MANDATORY WORKSPACE TOOL SELECTION RULES
 
-This repository utilizes custom AST-aware and graph-indexed tools (search_graph, resolve_symbol, view_symbol_ast, trace_execution_path). These are highly optimized for PizenLabs' internal architecture.
-
+	rawContent := `<!-- lea-lx-mcp:start -->
 ## 1. Tool Priority Queue (Strict Compliance)
-1.  **FIRST PRIORITY (Structure & Lookups):** Always invoke search_graph and view_symbol_ast directly when searching for code, analyzing failing tests, or viewing context.
-2.  **LAST RESORT (Fallback Only):** You may only use generic fallback tools (like codebase-memory-mcp_*, grep, or glob) if and only if the primary tools yield zero results.
+1. **FIRST PRIORITY:** Always invoke the custom AST-aware commands directly when searching for code or viewing context.
+   * Code Search: Use [BT]lynx_search_graph[BT].
+   * Symbol Definition: Use [BT]lynx_resolve_symbol[BT].
+   * AST Inspection: Use [BT]lea_view_symbol_ast[BT].
 
-## 2. Enforcement
-Before executing any tool call, verify that you are leveraging the custom AST-aware commands first. Guessing file paths via generic tools before attempting a structured lookup is penalized.
+2. **LAST RESORT FALLBACK:** If (and only if) the primary tools above return connection errors, a method-not-found exception, or an empty index result, you are strictly allowed to fallback to grep or glob to locate the plain-text references.
+
+## 2. Strict Parameter Schema Mapping & Identifier Rules
+* **[BT]lea_view_symbol_ast[BT]**: Requires [BT]symbol_id[BT] parameter.
+  - For Functions: {"symbol_id": "func:package/path:FunctionName"}
+  - For Structs/Types: {"symbol_id": "type:package/path:StructName"}
+  - For Methods: {"symbol_id": "func:package/path:ReceiverStruct.MethodName"}
+
+* **[BT]lynx_search_graph[BT]**: Requires [BT]query[BT] parameter.
+  - Example: {"query": "userRepository"}
+
+* **[BT]lynx_resolve_symbol[BT]**: Requires [BT]name[BT] parameter.
+  - Example: {"name": "userRepository"}
+
+## 3. Expected Thinking Pattern & Examples
+When tasked to inspect or locate a struct, type, or function without an explicit package path, follow this internal reflection loop to save tokens and avoid failures:
+1. **Bad Thought:** "Let's run grep, ripgrep, or glob to find userRepository." -> (STRICT VIOLATION)
+2. **Good Thought:** "I must look up the structural definition first. I will call [BT]lynx_lynx_resolve_symbol[BT] with name='userRepository' or [BT]lynx_lynx_search_graph[BT] with query='userRepository' to discover its exact Go package path."
+3. **Execution:** Once the package path is resolved (e.g., [BT]internal/user/impl[BT]), I will construct the canonical [BT]symbol_id[BT] (e.g., [BT]type:internal/user/impl:userRepository[BT]) and invoke [BT]lea_lea_view_symbol_ast[BT] directly.
+
+## CRITICAL NOTE ON GO SYMBOLS:
+The second component in the [BT]symbol_id[BT] MUST ALWAYS be the exact Go package path (e.g., internal/user/impl), NEVER a standard Go filename or physical file path. Using file paths will result in immediate "symbol not found" errors.
+<!-- lea-lx-mcp:end -->
 `
+	content := strings.ReplaceAll(rawContent, "[BT]", "`")
 	return os.WriteFile(path, []byte(content), 0644)
 }
 

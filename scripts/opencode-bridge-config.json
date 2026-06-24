@@ -1,0 +1,38 @@
+# MCP Transport Bridge — OpenCode Integration Config
+# ==================================================
+# Add these entries to your ~/.opencode/settings.json under the "mcp" key.
+#
+# The bridged versions strip the double-prefix (lea_lea_ → lea_, lynx_lynx_ → lynx_)
+# before forwarding to the native binary. Use them if OpenCode's tool namespacing
+# causes "Method not found" (-32601) errors.
+#
+# You can keep both native AND bridged servers active simultaneously:
+#   - pizen-lea / pizen-lynx  → native (works with correct OpenCode routing)
+#   - pizen-lea-bridged / pizen-lynx-bridged → bridged (handles double-prefix)
+
+{
+  "mcp": {
+    "pizen-lea": {
+      "enabled": true,
+      "type": "local",
+      "command": ["/Users/anvndev/go/bin/lea", "mcp"]
+    },
+    "pizen-lynx": {
+      "enabled": true,
+      "type": "local",
+      "command": ["/Users/anvndev/.cargo/bin/lx", "mcp"]
+    },
+    "pizen-lea-bridged": {
+      "enabled": true,
+      "type": "local",
+      "command": ["/Users/anvndev/Documents/Project/OpenSource/PizenLabs/lea/scripts/mcp-bridge.sh",
+                   "/Users/anvndev/go/bin/lea", "mcp"]
+    },
+    "pizen-lynx-bridged": {
+      "enabled": true,
+      "type": "local",
+      "command": ["/Users/anvndev/Documents/Project/OpenSource/PizenLabs/lea/scripts/mcp-bridge.sh",
+                   "/Users/anvndev/.cargo/bin/lx", "mcp"]
+    }
+  }
+}

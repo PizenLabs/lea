@@ -2,6 +2,8 @@
 bin/
 lea
 .pi/
+**/__pycache__/
+*.pyc
 
 
 # OS generated files
