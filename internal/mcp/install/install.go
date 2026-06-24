@@ -481,8 +481,6 @@ func injectOpenCodeJSON(path, leaPath, lxPath string) error {
 	}
 	raw["mcp"] = mcp
 
-	injectHooksJSON(raw, leaPath)
-
 	return writeJSON(path, raw)
 }
 
